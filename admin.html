@@ -1,0 +1,1502 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APRIS — Admin Knowledge Base</title>
+  <meta name="description" content="Admin dashboard untuk mengelola knowledge base PDF APRIS — upload, kelola, dan uji dokumen RAG." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    /* ═══════════════════════════════════════════
+       DESIGN TOKENS
+    ═══════════════════════════════════════════ */
+    :root {
+      --bg-base:        #0a0d14;
+      --bg-surface:     #111520;
+      --bg-elevated:    #181d2e;
+      --bg-card:        #1c2235;
+      --bg-input:       #141824;
+
+      --accent:         #6c63ff;
+      --accent-soft:    rgba(108, 99, 255, 0.12);
+      --accent-glow:    rgba(108, 99, 255, 0.35);
+      --accent-2:       #00d4aa;
+      --accent-2-soft:  rgba(0, 212, 170, 0.1);
+      --danger:         #ff4d6d;
+      --danger-soft:    rgba(255, 77, 109, 0.1);
+      --warning:        #ffb347;
+      --warning-soft:   rgba(255, 179, 71, 0.1);
+      --success:        #00d4aa;
+      --success-soft:   rgba(0, 212, 170, 0.1);
+
+      --text-primary:   #f0f2ff;
+      --text-secondary: #8892b0;
+      --text-muted:     #4a5568;
+
+      --border:         rgba(255,255,255,0.06);
+      --border-hover:   rgba(108, 99, 255, 0.4);
+
+      --radius-sm:  8px;
+      --radius-md:  12px;
+      --radius-lg:  18px;
+      --radius-xl:  24px;
+
+      --shadow-card: 0 4px 24px rgba(0,0,0,0.35);
+      --shadow-glow: 0 0 40px rgba(108,99,255,0.15);
+
+      --sidebar-w: 240px;
+      --header-h:  64px;
+    }
+
+    /* ═══════════════════════════════════════════
+       RESET & BASE
+    ═══════════════════════════════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      overflow-x: hidden;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 4px; }
+
+    /* ═══════════════════════════════════════════
+       SIDEBAR
+    ═══════════════════════════════════════════ */
+    .sidebar {
+      width: var(--sidebar-w);
+      height: 100vh;
+      position: fixed;
+      left: 0; top: 0;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      z-index: 100;
+      transition: transform 0.3s ease;
+    }
+
+    .sidebar-logo {
+      padding: 24px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      box-shadow: 0 4px 16px var(--accent-glow);
+      flex-shrink: 0;
+    }
+
+    .logo-text { font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }
+    .logo-sub  { font-size: 10px; color: var(--text-muted); margin-top: 1px; letter-spacing: 1px; text-transform: uppercase; }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .nav-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      padding: 12px 8px 6px;
+    }
+
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: 13.5px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+      border: 1px solid transparent;
+      text-decoration: none;
+    }
+    .nav-item:hover { background: var(--accent-soft); color: var(--text-primary); }
+    .nav-item.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: var(--border-hover);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .nav-item .icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+
+    .sidebar-footer {
+      padding: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .server-indicator {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px;
+      background: var(--bg-card);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      animation: pulse-dot 2s infinite;
+      flex-shrink: 0;
+    }
+    .dot.online  { background: var(--success); }
+    .dot.offline { background: var(--danger); animation: none; }
+    @keyframes pulse-dot {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.4; }
+    }
+
+    /* ═══════════════════════════════════════════
+       MAIN CONTENT
+    ═══════════════════════════════════════════ */
+    .main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    .header {
+      height: var(--header-h);
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      position: sticky; top: 0;
+      z-index: 50;
+      backdrop-filter: blur(12px);
+    }
+
+    .header-left { display: flex; flex-direction: column; }
+    .page-title  { font-size: 18px; font-weight: 700; }
+    .page-sub    { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+
+    .header-right { display: flex; align-items: center; gap: 12px; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 9px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 13px; font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+      font-family: 'Inter', sans-serif;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 4px 16px var(--accent-glow);
+    }
+    .btn-primary:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .btn-ghost {
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { border-color: var(--border-hover); color: var(--text-primary); }
+    .btn-danger {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border: 1px solid rgba(255,77,109,0.2);
+    }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+    .content { padding: 28px; flex: 1; }
+
+    /* ═══════════════════════════════════════════
+       PAGES
+    ═══════════════════════════════════════════ */
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* ═══════════════════════════════════════════
+       STAT CARDS
+    ═══════════════════════════════════════════ */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-card); }
+    .stat-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0;
+      height: 2px;
+    }
+    .stat-card.purple::before { background: linear-gradient(90deg, var(--accent), #a78bfa); }
+    .stat-card.teal::before   { background: linear-gradient(90deg, var(--accent-2), #00b4d8); }
+    .stat-card.orange::before { background: linear-gradient(90deg, var(--warning), #ff6b35); }
+    .stat-card.red::before    { background: linear-gradient(90deg, var(--danger), #ff6b9d); }
+
+    .stat-icon {
+      font-size: 22px;
+      width: 44px; height: 44px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      margin-bottom: 14px;
+    }
+    .stat-card.purple .stat-icon { background: var(--accent-soft); }
+    .stat-card.teal   .stat-icon { background: var(--accent-2-soft); }
+    .stat-card.orange .stat-icon { background: var(--warning-soft); }
+    .stat-card.red    .stat-icon { background: var(--danger-soft); }
+
+    .stat-value { font-size: 28px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
+    .stat-label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+
+    /* ═══════════════════════════════════════════
+       CARDS
+    ═══════════════════════════════════════════ */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-title {
+      font-size: 14px; font-weight: 700;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .card-body { padding: 22px; }
+
+    /* ═══════════════════════════════════════════
+       UPLOAD DROP ZONE
+    ═══════════════════════════════════════════ */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius-lg);
+      padding: 48px 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .dropzone input[type="file"] {
+      position: absolute; inset: 0;
+      opacity: 0; cursor: pointer;
+    }
+    .dropzone-icon { font-size: 40px; margin-bottom: 14px; }
+    .dropzone-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+    .dropzone-sub   { font-size: 13px; color: var(--text-muted); }
+    .dropzone-badge {
+      display: inline-block;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid var(--border-hover);
+      border-radius: 99px;
+      padding: 3px 10px;
+      font-size: 11px; font-weight: 600;
+      margin-top: 12px;
+    }
+
+    /* Upload queue */
+    .upload-queue {
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .upload-item {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .upload-item-icon { font-size: 20px; flex-shrink: 0; }
+    .upload-item-info { flex: 1; min-width: 0; }
+    .upload-item-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .upload-item-size { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .upload-progress  { height: 4px; background: var(--border); border-radius: 4px; margin-top: 8px; overflow: hidden; }
+    .upload-progress-bar {
+      height: 100%; border-radius: 4px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 0.4s ease;
+    }
+    .upload-status {
+      font-size: 11px; font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 99px;
+      flex-shrink: 0;
+    }
+    .upload-status.pending  { background: var(--warning-soft); color: var(--warning); }
+    .upload-status.loading  { background: var(--accent-soft); color: var(--accent); }
+    .upload-status.done     { background: var(--success-soft); color: var(--success); }
+    .upload-status.error    { background: var(--danger-soft); color: var(--danger); }
+
+    /* ═══════════════════════════════════════════
+       DOCUMENTS TABLE
+    ═══════════════════════════════════════════ */
+    .doc-table { width: 100%; border-collapse: collapse; }
+    .doc-table th {
+      padding: 12px 16px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+    }
+    .doc-table td {
+      padding: 14px 16px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .doc-table tr:last-child td { border-bottom: none; }
+    .doc-table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+
+    .doc-name {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .doc-file-icon {
+      width: 34px; height: 34px;
+      background: var(--danger-soft);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-lang {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid rgba(108,99,255,0.2);
+    }
+    .badge-id   { background: var(--accent-2-soft); color: var(--accent-2); border: 1px solid rgba(0,212,170,0.2); }
+    .badge-en   { background: var(--warning-soft); color: var(--warning); border: 1px solid rgba(255,179,71,0.2); }
+    .badge-mixed { background: var(--accent-soft); color: #a78bfa; border: 1px solid rgba(167,139,250,0.2); }
+
+    /* ═══════════════════════════════════════════
+       QUERY PANEL
+    ═══════════════════════════════════════════ */
+    .query-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 900px) { .query-layout { grid-template-columns: 1fr; } }
+
+    .query-input-wrap {
+      position: relative;
+    }
+    textarea {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-family: 'Inter', sans-serif;
+      font-size: 13.5px;
+      padding: 14px 16px;
+      resize: vertical;
+      min-height: 120px;
+      transition: border-color 0.2s;
+      outline: none;
+    }
+    textarea:focus { border-color: var(--accent); }
+    textarea::placeholder { color: var(--text-muted); }
+
+    .query-options {
+      display: flex; align-items: center; gap: 12px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+    .option-label { font-size: 12px; color: var(--text-muted); }
+    select, input[type="number"] {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 12px;
+      padding: 6px 10px;
+      outline: none;
+      font-family: 'Inter', sans-serif;
+      transition: border-color 0.2s;
+    }
+    select:focus, input[type="number"]:focus { border-color: var(--accent); }
+
+    .answer-box {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      min-height: 200px;
+      font-size: 13.5px;
+      line-height: 1.7;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+      font-family: 'Inter', sans-serif;
+    }
+    .answer-placeholder {
+      color: var(--text-muted);
+      font-style: italic;
+      text-align: center;
+      margin-top: 60px;
+    }
+
+    .sources-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .source-chip {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+    .source-score {
+      margin-left: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--accent-2);
+    }
+
+    /* ═══════════════════════════════════════════
+       STATUS PAGE
+    ═══════════════════════════════════════════ */
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-key   { color: var(--text-muted); }
+    .info-val   { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-primary); }
+
+    .endpoint-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .endpoint-item {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-size: 12px;
+    }
+    .method {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .method.get  { background: var(--success-soft); color: var(--success); }
+    .method.post { background: var(--accent-soft); color: var(--accent); }
+    .endpoint-path { font-family: 'JetBrains Mono', monospace; color: var(--text-secondary); }
+    .endpoint-desc { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+
+    /* ═══════════════════════════════════════════
+       TOAST
+    ═══════════════════════════════════════════ */
+    .toast-container {
+      position: fixed; bottom: 24px; right: 24px;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 999;
+    }
+    .toast {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      font-size: 13px;
+      display: flex; align-items: center; gap: 10px;
+      animation: slide-in 0.3s ease;
+      box-shadow: var(--shadow-card);
+      max-width: 320px;
+    }
+    .toast.success { border-left: 3px solid var(--success); }
+    .toast.error   { border-left: 3px solid var(--danger); }
+    .toast.info    { border-left: 3px solid var(--accent); }
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    /* ═══════════════════════════════════════════
+       EMPTY STATE
+    ═══════════════════════════════════════════ */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+    }
+    .empty-icon  { font-size: 40px; margin-bottom: 12px; }
+    .empty-title { font-size: 15px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+    .empty-desc  { font-size: 13px; }
+
+    /* ═══════════════════════════════════════════
+       LOADING SPINNER
+    ═══════════════════════════════════════════ */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,0.1);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ═══════════════════════════════════════════
+       INGEST LOG
+    ═══════════════════════════════════════════ */
+    .log-box {
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.8;
+      color: var(--accent-2);
+      max-height: 240px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .log-box .log-info    { color: var(--text-secondary); }
+    .log-box .log-success { color: var(--success); }
+    .log-box .log-error   { color: var(--danger); }
+    .log-box .log-warn    { color: var(--warning); }
+
+    /* ═══════════════════════════════════════════
+       MISC UTILITIES
+    ═══════════════════════════════════════════ */
+    .flex-between { display: flex; align-items: center; justify-content: space-between; }
+    .flex-gap     { display: flex; align-items: center; gap: 8px; }
+    .mt-4  { margin-top: 16px; }
+    .mt-6  { margin-top: 24px; }
+    .text-muted { color: var(--text-muted); font-size: 12px; }
+    .divider { height: 1px; background: var(--border); margin: 20px 0; }
+
+    /* ═══════════════════════════════════════════
+       CONFIRM MODAL
+    ═══════════════════════════════════════════ */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: 28px;
+      max-width: 380px;
+      width: 90%;
+      box-shadow: var(--shadow-card);
+      animation: modal-in 0.25s ease;
+    }
+    @keyframes modal-in {
+      from { opacity: 0; transform: scale(0.95); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+    .modal-desc  { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 24px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+    /* ═══════════════════════════════════════════
+       RESPONSIVE
+    ═══════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      .sidebar { transform: translateX(-100%); }
+      .sidebar.open { transform: translateX(0); }
+      .main { margin-left: 0; }
+      .content { padding: 16px; }
+      .stat-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon">🧠</div>
+    <div>
+      <div class="logo-text">APRIS</div>
+      <div class="logo-sub">Knowledge Admin</div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="nav-label">Menu</div>
+    <div class="nav-item active" onclick="navigate('dashboard')" id="nav-dashboard">
+      <span class="icon">📊</span> Dashboard
+    </div>
+    <div class="nav-item" onclick="navigate('upload')" id="nav-upload">
+      <span class="icon">📤</span> Upload PDF
+    </div>
+    <div class="nav-item" onclick="navigate('documents')" id="nav-documents">
+      <span class="icon">📚</span> Dokumen
+    </div>
+    <div class="nav-item" onclick="navigate('query')" id="nav-query">
+      <span class="icon">💬</span> Test Query
+    </div>
+    <div class="nav-label">Sistem</div>
+    <div class="nav-item" onclick="navigate('status')" id="nav-status">
+      <span class="icon">⚙️</span> Status Server
+    </div>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="server-indicator">
+      <div class="dot" id="server-dot"></div>
+      <div>
+        <div style="font-size:12px;font-weight:600;" id="server-status-text">Menghubungkan...</div>
+        <div style="font-size:10px;color:var(--text-muted)" id="server-url">localhost:5050</div>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════ MAIN ═══════ -->
+<div class="main">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="page-title" id="page-title">Dashboard</div>
+      <div class="page-sub" id="page-sub">Ringkasan knowledge base APRIS</div>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-ghost btn-sm" onclick="refreshAll()">🔄 Refresh</button>
+      <button class="btn btn-primary btn-sm" onclick="navigate('upload')">+ Upload PDF</button>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- ═══ PAGE: DASHBOARD ═══ -->
+    <div class="page active" id="page-dashboard">
+      <div class="stat-grid">
+        <div class="stat-card purple">
+          <div class="stat-icon">📄</div>
+          <div class="stat-value" id="stat-docs">—</div>
+          <div class="stat-label">Total Dokumen</div>
+        </div>
+        <div class="stat-card teal">
+          <div class="stat-icon">🧩</div>
+          <div class="stat-value" id="stat-chunks">—</div>
+          <div class="stat-label">Total Chunks</div>
+        </div>
+        <div class="stat-card orange">
+          <div class="stat-icon">🌐</div>
+          <div class="stat-value" id="stat-langs">—</div>
+          <div class="stat-label">Bahasa Terdeteksi</div>
+        </div>
+        <div class="stat-card red">
+          <div class="stat-icon">🔌</div>
+          <div class="stat-value" id="stat-server">—</div>
+          <div class="stat-label">Status Server</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+        <!-- Recent Docs -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📚 Dokumen Terbaru</div>
+            <button class="btn btn-ghost btn-sm" onclick="navigate('documents')">Lihat Semua</button>
+          </div>
+          <div id="recent-docs-list" style="padding: 8px 0;">
+            <div class="empty-state">
+              <div class="spinner" style="margin: 0 auto 12px;"></div>
+              <div>Memuat...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">⚡ Quick Actions</div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px;">
+            <button class="btn btn-ghost" style="justify-content:flex-start;gap:12px;" onclick="navigate('upload')">
+              📤 <span>Upload PDF Baru</span>
+            </button>
+            <button class="btn btn-ghost" style="justify-content:flex-start;gap:12px;" onclick="navigate('query')">
+              💬 <span>Test Tanya Jawab</span>
+            </button>
+            <button class="btn btn-ghost" style="justify-content:flex-start;gap:12px;" onclick="triggerIngest()">
+              🔄 <span>Ingest Ulang Semua PDF</span>
+            </button>
+            <div class="divider"></div>
+            <button class="btn btn-danger" style="justify-content:flex-start;gap:12px;" onclick="showResetModal()">
+              🗑️ <span>Reset Database</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ PAGE: UPLOAD ═══ -->
+    <div class="page" id="page-upload">
+      <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:24px;align-items:start;">
+        <div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">📤 Upload Dokumen PDF</div>
+            </div>
+            <div class="card-body">
+              <div class="dropzone" id="dropzone">
+                <input type="file" id="file-input" accept=".pdf" multiple onchange="handleFiles(this.files)" />
+                <div class="dropzone-icon">📁</div>
+                <div class="dropzone-title">Drag & Drop PDF di sini</div>
+                <div class="dropzone-sub">atau klik untuk pilih file</div>
+                <div class="dropzone-badge">Format: PDF · Maks: 100MB/file</div>
+              </div>
+
+              <div class="upload-queue" id="upload-queue"></div>
+
+              <div id="upload-action" style="display:none;margin-top:16px;">
+                <button class="btn btn-primary" onclick="startUploadAndIngest()" id="start-btn">
+                  🚀 Upload & Ingest
+                </button>
+                <button class="btn btn-ghost" onclick="clearQueue()" style="margin-left:8px;">
+                  ✕ Batal
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Ingest Log -->
+          <div class="card mt-4" id="ingest-log-card" style="display:none;">
+            <div class="card-header">
+              <div class="card-title">📋 Log Proses</div>
+              <button class="btn btn-ghost btn-sm" onclick="clearLog()">Hapus Log</button>
+            </div>
+            <div class="card-body">
+              <div class="log-box" id="ingest-log"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Instructions -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📖 Panduan</div>
+          </div>
+          <div class="card-body">
+            <div style="display:flex;flex-direction:column;gap:16px;">
+              <div>
+                <div style="font-size:13px;font-weight:600;margin-bottom:6px;color:var(--accent)">① Upload PDF</div>
+                <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.7">
+                  Pilih atau drag file PDF. Bisa banyak file sekaligus. File akan diupload ke folder <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:4px;color:var(--accent-2)">docs/</code>
+                </div>
+              </div>
+              <div>
+                <div style="font-size:13px;font-weight:600;margin-bottom:6px;color:var(--accent)">② Ingest Otomatis</div>
+                <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.7">
+                  Setelah upload, sistem akan memproses PDF secara otomatis: ekstrak teks → buat embedding → simpan ke database.
+                </div>
+              </div>
+              <div>
+                <div style="font-size:13px;font-weight:600;margin-bottom:6px;color:var(--accent)">③ Siap Digunakan</div>
+                <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.7">
+                  Setelah proses selesai, APRIS langsung bisa menjawab pertanyaan berdasarkan isi dokumen.
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div style="font-size:12px;color:var(--text-muted);">
+                ⚠️ PDF berbasis scan/gambar tidak dapat diekstrak tanpa OCR tambahan.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ PAGE: DOCUMENTS ═══ -->
+    <div class="page" id="page-documents">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">📚 Semua Dokumen <span id="doc-count-badge" style="background:var(--accent-soft);color:var(--accent);font-size:11px;padding:2px 8px;border-radius:99px;margin-left:6px;">0</span></div>
+          <div class="flex-gap">
+            <button class="btn btn-ghost btn-sm" onclick="loadDocuments()">🔄 Refresh</button>
+            <button class="btn btn-danger btn-sm" onclick="showResetModal()">🗑️ Reset DB</button>
+          </div>
+        </div>
+        <div id="documents-table-wrap">
+          <div class="empty-state">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Memuat dokumen...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ PAGE: QUERY ═══ -->
+    <div class="page" id="page-query">
+      <div class="query-layout">
+        <!-- Input -->
+        <div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">💬 Tanya Dokumen</div>
+            </div>
+            <div class="card-body">
+              <textarea id="query-input" placeholder="Contoh: Apa yang dimaksud dengan manajemen risiko? Jelaskan berdasarkan dokumen yang tersedia." rows="5"></textarea>
+              <div class="query-options">
+                <span class="option-label">Jumlah sumber:</span>
+                <input type="number" id="top-k" value="5" min="1" max="20" style="width:60px;" />
+              </div>
+              <button class="btn btn-primary" style="margin-top:14px;width:100%;" onclick="submitQuery()" id="ask-btn">
+                🔍 Tanya APRIS
+              </button>
+            </div>
+          </div>
+
+          <!-- Sources -->
+          <div class="card mt-4" id="sources-card" style="display:none;">
+            <div class="card-header">
+              <div class="card-title">📌 Sumber Dokumen</div>
+            </div>
+            <div class="card-body">
+              <div class="sources-list" id="sources-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Answer -->
+        <div>
+          <div class="card" style="height:100%;">
+            <div class="card-header">
+              <div class="card-title">🤖 Jawaban APRIS</div>
+              <div id="query-time" class="text-muted"></div>
+            </div>
+            <div class="card-body">
+              <div class="answer-box" id="answer-box">
+                <div class="answer-placeholder">
+                  Ketik pertanyaan dan klik "Tanya APRIS" untuk mendapat jawaban berdasarkan dokumen PDF kamu.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ PAGE: STATUS ═══ -->
+    <div class="page" id="page-status">
+      <div class="status-grid">
+        <!-- Server Info -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🖥️ Informasi Server</div>
+            <button class="btn btn-ghost btn-sm" onclick="loadStatus()">🔄</button>
+          </div>
+          <div class="card-body" id="status-server-info">
+            <div class="empty-state"><div class="spinner" style="margin:0 auto 10px;"></div><div>Memuat...</div></div>
+          </div>
+        </div>
+
+        <!-- Database Info -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🗄️ Database</div>
+          </div>
+          <div class="card-body" id="status-db-info">
+            <div class="empty-state"><div class="spinner" style="margin:0 auto 10px;"></div><div>Memuat...</div></div>
+          </div>
+        </div>
+
+        <!-- API Endpoints -->
+        <div class="card" style="grid-column: 1 / -1;">
+          <div class="card-header">
+            <div class="card-title">🔌 API Endpoints</div>
+            <div class="text-muted" id="base-url-label">http://localhost:5050</div>
+          </div>
+          <div class="card-body">
+            <div class="endpoint-list">
+              <div class="endpoint-item">
+                <span class="method get">GET</span>
+                <span class="endpoint-path">/status</span>
+                <span class="endpoint-desc">Cek status server & database</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method get">GET</span>
+                <span class="endpoint-path">/documents</span>
+                <span class="endpoint-desc">Daftar dokumen tersimpan</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method post">POST</span>
+                <span class="endpoint-path">/ask</span>
+                <span class="endpoint-desc">Tanya berdasarkan dokumen PDF</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method post">POST</span>
+                <span class="endpoint-path">/upload</span>
+                <span class="endpoint-desc">Upload file PDF baru</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method post">POST</span>
+                <span class="endpoint-path">/ingest</span>
+                <span class="endpoint-desc">Trigger proses ingest PDF</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div><!-- end .main -->
+
+<!-- Toast Container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- Modal Konfirmasi Reset -->
+<div class="modal-overlay" id="reset-modal">
+  <div class="modal">
+    <div class="modal-title">⚠️ Reset Database?</div>
+    <div class="modal-desc">
+      Semua data chunk & embedding yang tersimpan akan dihapus permanen. Kamu perlu menjalankan ingest ulang untuk menggunakan dokumen lagi.
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideResetModal()">Batal</button>
+      <button class="btn btn-danger" onclick="confirmReset()">Ya, Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════
+   CONFIG
+═══════════════════════════════════════════ */
+// Auto-detect URL: jika buka via server (Railway/localhost), pakai origin yang sama
+// Jika buka sebagai file lokal (file://), fallback ke localhost:5050
+const API_BASE = (location.protocol === 'file:')
+  ? 'http://localhost:5050'
+  : location.origin;
+
+/* ═══════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════ */
+let uploadFiles = [];
+let serverOnline = false;
+
+/* ═══════════════════════════════════════════
+   NAVIGATION
+═══════════════════════════════════════════ */
+const pageMeta = {
+  dashboard: { title: 'Dashboard',    sub: 'Ringkasan knowledge base APRIS' },
+  upload:    { title: 'Upload PDF',   sub: 'Tambah dokumen baru ke knowledge base' },
+  documents: { title: 'Dokumen',      sub: 'Kelola dokumen PDF yang tersimpan' },
+  query:     { title: 'Test Query',   sub: 'Uji tanya-jawab berbasis dokumen' },
+  status:    { title: 'Status Server','sub': 'Informasi sistem & API endpoints' }
+};
+
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+  document.getElementById(`page-${page}`).classList.add('active');
+  document.getElementById(`nav-${page}`).classList.add('active');
+
+  const meta = pageMeta[page];
+  document.getElementById('page-title').textContent = meta.title;
+  document.getElementById('page-sub').textContent = meta.sub;
+
+  // Load data per page
+  if (page === 'dashboard')  { loadDashboard(); }
+  if (page === 'documents')  { loadDocuments(); }
+  if (page === 'status')     { loadStatus(); }
+}
+
+/* ═══════════════════════════════════════════
+   API HELPERS
+═══════════════════════════════════════════ */
+async function apiFetch(path, options = {}) {
+  try {
+    const res = await fetch(API_BASE + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options
+    });
+    return await res.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+/* ═══════════════════════════════════════════
+   SERVER STATUS CHECK
+═══════════════════════════════════════════ */
+async function checkServer() {
+  const data = await apiFetch('/status');
+  const dot  = document.getElementById('server-dot');
+  const txt  = document.getElementById('server-status-text');
+  serverOnline = !!data;
+
+  if (data) {
+    dot.className = 'dot online';
+    txt.textContent = 'Server Online';
+    document.getElementById('stat-server').textContent = 'Online';
+    document.getElementById('stat-server').style.color = 'var(--success)';
+  } else {
+    dot.className = 'dot offline';
+    txt.textContent = 'Server Offline';
+    document.getElementById('stat-server').textContent = 'Offline';
+    document.getElementById('stat-server').style.color = 'var(--danger)';
+  }
+  return data;
+}
+
+/* ═══════════════════════════════════════════
+   DASHBOARD
+═══════════════════════════════════════════ */
+async function loadDashboard() {
+  const [statusData, docsData] = await Promise.all([
+    checkServer(),
+    apiFetch('/documents')
+  ]);
+
+  if (docsData) {
+    document.getElementById('stat-docs').textContent   = docsData.total_docs ?? 0;
+    document.getElementById('stat-chunks').textContent = docsData.total_chunks ?? 0;
+
+    const langs = new Set((docsData.documents || []).map(d => d.language).filter(Boolean));
+    document.getElementById('stat-langs').textContent = langs.size || 0;
+
+    // Recent docs
+    const el   = document.getElementById('recent-docs-list');
+    const docs = (docsData.documents || []).slice(0, 5);
+    if (docs.length === 0) {
+      el.innerHTML = `<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-title">Belum ada dokumen</div><div class="empty-desc">Upload PDF pertamamu!</div></div>`;
+    } else {
+      el.innerHTML = docs.map(d => `
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--border);">
+          <div style="width:32px;height:32px;background:var(--danger-soft);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;">📄</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${d.filename}</div>
+            <div style="font-size:11px;color:var(--text-muted);">${d.chunks} chunks · ${d.pages} halaman</div>
+          </div>
+          <span class="badge ${langBadgeClass(d.language)}">${d.language || '?'}</span>
+        </div>
+      `).join('');
+    }
+  } else {
+    document.getElementById('recent-docs-list').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">🔌</div>
+        <div class="empty-title">Server tidak terhubung</div>
+        <div class="empty-desc">Jalankan: <code>python rag_server.py</code></div>
+      </div>`;
+  }
+}
+
+/* ═══════════════════════════════════════════
+   DOCUMENTS
+═══════════════════════════════════════════ */
+function langBadgeClass(lang) {
+  if (!lang) return 'badge-lang';
+  if (lang === 'id') return 'badge badge-id';
+  if (lang === 'en') return 'badge badge-en';
+  return 'badge badge-mixed';
+}
+
+async function loadDocuments() {
+  const wrap = document.getElementById('documents-table-wrap');
+  wrap.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto 12px;"></div><div>Memuat...</div></div>`;
+
+  const data = await apiFetch('/documents');
+  if (!data) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">🔌</div><div class="empty-title">Tidak terhubung ke server</div><div class="empty-desc">Pastikan <code>python rag_server.py</code> sudah berjalan</div></div>`;
+    return;
+  }
+
+  document.getElementById('doc-count-badge').textContent = data.total_docs ?? 0;
+
+  if (!data.documents || data.documents.length === 0) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-title">Belum ada dokumen</div><div class="empty-desc">Upload PDF di menu "Upload PDF"</div></div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table class="doc-table">
+      <thead>
+        <tr>
+          <th>Nama File</th>
+          <th>Chunks</th>
+          <th>Halaman</th>
+          <th>Bahasa</th>
+          <th>Waktu Ingest</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${data.documents.map(d => `
+          <tr>
+            <td>
+              <div class="doc-name">
+                <div class="doc-file-icon">📄</div>
+                <div>
+                  <div style="font-size:13px;font-weight:600;">${d.filename}</div>
+                </div>
+              </div>
+            </td>
+            <td><span style="font-family:'JetBrains Mono',monospace;font-size:12px;">${d.chunks}</span></td>
+            <td><span style="font-family:'JetBrains Mono',monospace;font-size:12px;">${d.pages}</span></td>
+            <td><span class="${langBadgeClass(d.language)}">${d.language || '?'}</span></td>
+            <td style="color:var(--text-muted);font-size:12px;">${formatDate(d.ingested_at)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function formatDate(iso) {
+  if (!iso || iso === '?') return '—';
+  try {
+    return new Date(iso).toLocaleString('id-ID', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+  } catch { return iso.slice(0,16).replace('T',' '); }
+}
+
+/* ═══════════════════════════════════════════
+   UPLOAD
+═══════════════════════════════════════════ */
+function handleFiles(files) {
+  for (const f of files) {
+    if (f.type !== 'application/pdf') { toast('Hanya file PDF yang diizinkan: ' + f.name, 'error'); continue; }
+    uploadFiles.push({ file: f, status: 'pending', progress: 0 });
+  }
+  renderQueue();
+}
+
+function renderQueue() {
+  const q = document.getElementById('upload-queue');
+  const a = document.getElementById('upload-action');
+  if (uploadFiles.length === 0) { q.innerHTML = ''; a.style.display = 'none'; return; }
+  a.style.display = 'block';
+  q.innerHTML = uploadFiles.map((item, i) => `
+    <div class="upload-item" id="upload-item-${i}">
+      <div class="upload-item-icon">📄</div>
+      <div class="upload-item-info">
+        <div class="upload-item-name">${item.file.name}</div>
+        <div class="upload-item-size">${formatBytes(item.file.size)}</div>
+        <div class="upload-progress">
+          <div class="upload-progress-bar" id="prog-${i}" style="width:${item.progress}%"></div>
+        </div>
+      </div>
+      <span class="upload-status ${item.status}" id="status-${i}">${statusLabel(item.status)}</span>
+    </div>
+  `).join('');
+}
+
+function statusLabel(s) {
+  return { pending:'Menunggu', loading:'Proses...', done:'✓ Selesai', error:'✗ Error' }[s] || s;
+}
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+async function startUploadAndIngest() {
+  if (!serverOnline) { toast('Server tidak terhubung! Jalankan rag_server.py', 'error'); return; }
+
+  const btn = document.getElementById('start-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Mengupload...';
+
+  showLog();
+  appendLog('📋 Memulai proses upload & ingest...\n', 'info');
+
+  for (let i = 0; i < uploadFiles.length; i++) {
+    const item = uploadFiles[i];
+    updateItemStatus(i, 'loading', 20);
+    appendLog(`\n📄 Upload: ${item.file.name}`, 'info');
+
+    const form = new FormData();
+    form.append('file', item.file);
+
+    try {
+      const res = await fetch(API_BASE + '/upload', { method: 'POST', body: form });
+      const data = await res.json();
+
+      if (data.error) throw new Error(data.error);
+
+      updateItemStatus(i, 'loading', 60);
+      appendLog(`   ✓ Upload selesai`, 'success');
+      appendLog(`   🔄 Mengingest: ${item.file.name}...`, 'info');
+
+      // trigger ingest for this file
+      const ing = await apiFetch('/ingest', {
+        method: 'POST',
+        body: JSON.stringify({ file: item.file.name })
+      });
+
+      updateItemStatus(i, 'done', 100);
+      appendLog(`   ✅ ${item.file.name} berhasil diingest`, 'success');
+
+    } catch (e) {
+      updateItemStatus(i, 'error', 0);
+      appendLog(`   ✗ Error: ${e.message}`, 'error');
+    }
+  }
+
+  appendLog('\n✅ Semua proses selesai! Cek halaman Dokumen.\n', 'success');
+  btn.disabled = false;
+  btn.innerHTML = '🚀 Upload & Ingest';
+  toast('Upload & ingest selesai!', 'success');
+}
+
+function updateItemStatus(i, status, progress) {
+  uploadFiles[i].status = status;
+  uploadFiles[i].progress = progress;
+  const statusEl = document.getElementById(`status-${i}`);
+  const progEl   = document.getElementById(`prog-${i}`);
+  if (statusEl) { statusEl.className = `upload-status ${status}`; statusEl.textContent = statusLabel(status); }
+  if (progEl)   { progEl.style.width = progress + '%'; }
+}
+
+function clearQueue() {
+  uploadFiles = [];
+  renderQueue();
+  document.getElementById('file-input').value = '';
+}
+
+function showLog() {
+  document.getElementById('ingest-log-card').style.display = 'block';
+}
+
+function appendLog(text, type = '') {
+  const el = document.getElementById('ingest-log');
+  const span = document.createElement('span');
+  span.className = type ? `log-${type}` : '';
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+function clearLog() {
+  document.getElementById('ingest-log').innerHTML = '';
+}
+
+/* Drag & drop */
+const dz = document.getElementById('dropzone');
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('dragover');
+  handleFiles(e.dataTransfer.files);
+});
+
+/* ═══════════════════════════════════════════
+   QUERY
+═══════════════════════════════════════════ */
+async function submitQuery() {
+  const q   = document.getElementById('query-input').value.trim();
+  const topK = parseInt(document.getElementById('top-k').value) || 5;
+  if (!q) { toast('Masukkan pertanyaan terlebih dahulu', 'error'); return; }
+  if (!serverOnline) { toast('Server tidak terhubung!', 'error'); return; }
+
+  const btn = document.getElementById('ask-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Mencari...';
+
+  document.getElementById('answer-box').innerHTML = '<div class="answer-placeholder"><span class="spinner" style="margin:0 auto 10px;display:block;width:24px;height:24px;"></span>Mencari jawaban di dokumen...</div>';
+  document.getElementById('sources-card').style.display = 'none';
+
+  const t0   = Date.now();
+  const data = await apiFetch('/ask', {
+    method: 'POST',
+    body: JSON.stringify({ query: q, top_k: topK })
+  });
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+
+  btn.disabled = false;
+  btn.innerHTML = '🔍 Tanya APRIS';
+
+  if (!data || data.error) {
+    document.getElementById('answer-box').textContent = '⚠️ Error: ' + (data?.error || 'Tidak bisa terhubung ke server.');
+    return;
+  }
+
+  document.getElementById('query-time').textContent = `${elapsed}s · ${data.chunks_used} chunks`;
+  document.getElementById('answer-box').textContent = data.answer || '(Tidak ada jawaban)';
+
+  // Sources
+  if (data.sources && data.sources.length > 0) {
+    document.getElementById('sources-card').style.display = 'block';
+    document.getElementById('sources-list').innerHTML = data.sources.map(s => `
+      <div class="source-chip">
+        <span>📄</span>
+        <span style="font-weight:600;font-size:12px;">${s.source}</span>
+        <span style="color:var(--text-muted);font-size:11px;">Hal. ${s.page_num}</span>
+        <span class="source-score">${(s.score * 100).toFixed(0)}%</span>
+      </div>
+    `).join('');
+  }
+}
+
+document.getElementById('query-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.ctrlKey) submitQuery();
+});
+
+/* ═══════════════════════════════════════════
+   STATUS
+═══════════════════════════════════════════ */
+async function loadStatus() {
+  const data = await apiFetch('/status');
+  const serverEl = document.getElementById('status-server-info');
+  const dbEl     = document.getElementById('status-db-info');
+
+  if (!data) {
+    const offlineHTML = `<div class="empty-state"><div class="empty-icon">🔌</div><div class="empty-title">Server Offline</div><div class="empty-desc">Jalankan: <code style="font-family:'JetBrains Mono',monospace;color:var(--accent-2)">python rag_server.py</code></div></div>`;
+    serverEl.innerHTML = offlineHTML;
+    dbEl.innerHTML     = offlineHTML;
+    return;
+  }
+
+  serverEl.innerHTML = `
+    <div class="info-row"><span class="info-key">Status</span><span class="info-val" style="color:var(--success)">● Online</span></div>
+    <div class="info-row"><span class="info-key">Chat Model</span><span class="info-val">${data.models?.chat ?? '—'}</span></div>
+    <div class="info-row"><span class="info-key">Embedding Model</span><span class="info-val">${data.models?.embedding ?? '—'}</span></div>
+    <div class="info-row"><span class="info-key">Waktu Server</span><span class="info-val">${formatDate(data.timestamp)}</span></div>
+    <div class="info-row"><span class="info-key">Folder PDF</span><span class="info-val">${data.docs_folder?.pdf_count ?? 0} file</span></div>
+  `;
+
+  dbEl.innerHTML = `
+    <div class="info-row"><span class="info-key">Collection</span><span class="info-val">${data.database?.collection ?? '—'}</span></div>
+    <div class="info-row"><span class="info-key">Total Chunks</span><span class="info-val">${data.database?.total_chunks ?? 0}</span></div>
+    <div class="info-row"><span class="info-key">Path DB</span><span class="info-val" style="font-size:10px;">${data.database?.path ?? '—'}</span></div>
+  `;
+
+  document.getElementById('base-url-label').textContent = `${location.protocol}//${location.hostname}:5050`;
+}
+
+/* ═══════════════════════════════════════════
+   INGEST / RESET
+═══════════════════════════════════════════ */
+async function triggerIngest() {
+  if (!serverOnline) { toast('Server tidak terhubung!', 'error'); return; }
+  toast('Memulai proses ingest ulang... cek terminal server.', 'info');
+  await apiFetch('/ingest', { method: 'POST', body: JSON.stringify({ reset: false }) });
+}
+
+function showResetModal() { document.getElementById('reset-modal').classList.add('show'); }
+function hideResetModal() { document.getElementById('reset-modal').classList.remove('show'); }
+
+async function confirmReset() {
+  hideResetModal();
+  if (!serverOnline) { toast('Server tidak terhubung!', 'error'); return; }
+  toast('Reset database dimulai... cek terminal server.', 'info');
+  await apiFetch('/ingest', { method: 'POST', body: JSON.stringify({ reset: true }) });
+  setTimeout(() => { loadDashboard(); loadDocuments(); }, 2000);
+}
+
+/* ═══════════════════════════════════════════
+   REFRESH
+═══════════════════════════════════════════ */
+async function refreshAll() {
+  const current = document.querySelector('.page.active')?.id?.replace('page-', '');
+  await checkServer();
+  if (current === 'dashboard')  loadDashboard();
+  if (current === 'documents')  loadDocuments();
+  if (current === 'status')     loadStatus();
+  toast('Data diperbarui', 'info');
+}
+
+/* ═══════════════════════════════════════════
+   TOAST
+═══════════════════════════════════════════ */
+function toast(msg, type = 'info') {
+  const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span>${icons[type] || 'ℹ️'}</span><span>${msg}</span>`;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+/* ═══════════════════════════════════════════
+   INIT
+═══════════════════════════════════════════ */
+window.addEventListener('DOMContentLoaded', () => {
+  checkServer();
+  loadDashboard();
+  setInterval(checkServer, 30000); // cek server tiap 30 detik
+});
+</script>
+</body>
+</html>

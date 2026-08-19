@@ -1,0 +1,27 @@
+# RAG Knowledge Base - APRIS
+# Sistem: PDF -> Gemini Embeddings -> ChromaDB
+
+# Google Gemini API (LLM + Embeddings) - SDK Baru
+google-genai>=0.3.0
+
+# Vector Database lokal / Railway Volume
+chromadb>=0.5.0
+
+# Ekstrak teks dari PDF
+pdfplumber>=0.11.0
+PyMuPDF>=1.24.0
+
+# Deteksi bahasa (ID/EN/campuran)
+langdetect>=1.0.9
+
+# API Server untuk integrasi
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Production WSGI server (untuk Railway)
+gunicorn>=22.0.0
+
+# Utilitas
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+colorama>=0.4.6
