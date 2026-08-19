@@ -94,21 +94,21 @@ def detect_language(text: str) -> str:
 
 def extract_text_from_pdf(pdf_path: str) -> list[dict]:
     """
-    Ekstrak teks dari PDF.
-    Coba PyMuPDF (fitz) dulu — lebih andal untuk banyak jenis PDF.
-    Fallback ke pdfplumber jika gagal.
+    Ekstrak teks dari PDF — 3 metode:
+    1. PyMuPDF (text layer)
+    2. pdfplumber (fallback)
+    3. Gemini Vision OCR (untuk PDF scan/gambar)
     """
     pages = []
 
     # === Metode 1: PyMuPDF (fitz) ===
     try:
-        import fitz  # PyMuPDF
+        import fitz
         doc = fitz.open(pdf_path)
         total = len(doc)
         log(f"  PyMuPDF: membaca {total} halaman...", "info")
         for i in range(total):
-            page = doc[i]
-            text = page.get_text("text")
+            text = doc[i].get_text("text")
             if text and text.strip():
                 pages.append({
                     "page_num":    i + 1,
@@ -117,17 +117,14 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
                     "char_count":  len(text)
                 })
         doc.close()
-
         if pages:
-            log(f"  PyMuPDF berhasil: {len(pages)} halaman dengan teks.", "ok")
+            log(f"  PyMuPDF OK: {len(pages)} halaman teks.", "ok")
             return pages
-        else:
-            log("  PyMuPDF: tidak ada teks terdeteksi — coba pdfplumber...", "warn")
-
+        log("  PyMuPDF: tidak ada teks → coba pdfplumber...", "warn")
     except Exception as e:
-        log(f"  PyMuPDF gagal: {e} — coba pdfplumber...", "warn")
+        log(f"  PyMuPDF gagal: {e}", "warn")
 
-    # === Metode 2: pdfplumber (fallback) ===
+    # === Metode 2: pdfplumber ===
     try:
         with pdfplumber.open(pdf_path) as pdf:
             total = len(pdf.pages)
@@ -141,15 +138,61 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
                         "text":        text.strip(),
                         "char_count":  len(text)
                     })
+        if pages:
+            log(f"  pdfplumber OK: {len(pages)} halaman teks.", "ok")
+            return pages
+        log("  pdfplumber: tidak ada teks → coba Gemini Vision OCR...", "warn")
+    except Exception as e:
+        log(f"  pdfplumber gagal: {e}", "warn")
+
+    # === Metode 3: Gemini Vision OCR (untuk PDF scan) ===
+    log("  Gemini Vision OCR: menggunakan AI untuk baca gambar halaman...", "info")
+    try:
+        import fitz
+        from google.genai import types as gtypes
+
+        doc   = fitz.open(pdf_path)
+        total = len(doc)
+        ocr_client = client  # gunakan client yang sudah diinit
+
+        for i in range(total):
+            page = doc[i]
+            # Render halaman ke gambar 200 DPI
+            pix      = page.get_pixmap(dpi=200)
+            img_bytes = pix.tobytes("png")
+
+            try:
+                response = ocr_client.models.generate_content(
+                    model="gemini-1.5-flash",
+                    contents=[
+                        gtypes.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                        "Ekstrak semua teks dari halaman dokumen ini. "
+                        "Kembalikan hanya teks asli tanpa format tambahan. "
+                        "Jika halaman berisi teks Bahasa Indonesia atau Belanda, "
+                        "transkripsi dengan akurat."
+                    ]
+                )
+                text = response.text.strip() if response.text else ""
+                if text:
+                    pages.append({
+                        "page_num":    i + 1,
+                        "total_pages": total,
+                        "text":        text,
+                        "char_count":  len(text)
+                    })
+                    log(f"  OCR hal.{i+1}: {len(text)} karakter", "info")
+            except Exception as e:
+                log(f"  OCR gagal hal.{i+1}: {e}", "warn")
+
+        doc.close()
 
         if pages:
-            log(f"  pdfplumber berhasil: {len(pages)} halaman dengan teks.", "ok")
+            log(f"  Gemini OCR selesai: {len(pages)}/{total} halaman berhasil.", "ok")
         else:
-            log("  pdfplumber: tidak ada teks! PDF mungkin berformat gambar/scan.", "error")
-            log("  Solusi: gunakan PDF yang bisa di-select teksnya, bukan hasil scan.", "error")
+            log("  Semua metode gagal. PDF tidak bisa dibaca.", "error")
 
     except Exception as e:
-        log(f"  pdfplumber gagal: {e}", "error")
+        log(f"  Gemini Vision OCR gagal: {e}", "error")
 
     return pages
 
