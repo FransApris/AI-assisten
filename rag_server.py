@@ -52,13 +52,13 @@ EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-0
 DEFAULT_DB_PATH   = "/data/vectorstore" if IS_PRODUCTION else "./vectorstore"
 DEFAULT_DOCS      = "/data/docs"        if IS_PRODUCTION else "./docs"
 
-CHROMA_DB_PATH    = os.getenv("CHROMA_DB_PATH",        DEFAULT_DB_PATH)
-CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION_NAME", "apris_knowledge")
+CHROMA_DB_PATH    = os.getenv("CHROMA_DB_PATH",        DEFAULT_DB_PATH).strip()
+CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION_NAME", "apris_knowledge").strip()
 TOP_K             = int(os.getenv("TOP_K_RESULTS", 5))
 # Railway otomatis set PORT — fallback ke 5050 untuk lokal
 SERVER_PORT       = int(os.getenv("PORT", os.getenv("RAG_SERVER_PORT", 5050)))
-SERVER_HOST       = os.getenv("RAG_SERVER_HOST", "0.0.0.0")
-DOCS_FOLDER       = os.getenv("DOCS_FOLDER", DEFAULT_DOCS)
+SERVER_HOST       = os.getenv("RAG_SERVER_HOST", "0.0.0.0").strip()
+DOCS_FOLDER       = os.getenv("DOCS_FOLDER", DEFAULT_DOCS).strip()
 
 # Buat folder dengan aman — jangan crash jika permission denied (Volume belum terpasang)
 try:

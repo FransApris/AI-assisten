@@ -35,9 +35,9 @@ EMBEDDING_MODEL  = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-00
 DEFAULT_DB_PATH  = "/data/vectorstore" if IS_PRODUCTION else "./vectorstore"
 DEFAULT_DOCS     = "/data/docs"        if IS_PRODUCTION else "./docs"
 
-CHROMA_DB_PATH   = os.getenv("CHROMA_DB_PATH",        DEFAULT_DB_PATH)
-CHROMA_COLLECTION= os.getenv("CHROMA_COLLECTION_NAME", "apris_knowledge")
-DOCS_FOLDER      = os.getenv("DOCS_FOLDER",            DEFAULT_DOCS)
+CHROMA_DB_PATH   = os.getenv("CHROMA_DB_PATH",        DEFAULT_DB_PATH).strip()
+CHROMA_COLLECTION= os.getenv("CHROMA_COLLECTION_NAME", "apris_knowledge").strip()
+DOCS_FOLDER      = os.getenv("DOCS_FOLDER",            DEFAULT_DOCS).strip()
 CHUNK_SIZE       = int(os.getenv("CHUNK_SIZE",  500))
 CHUNK_OVERLAP    = int(os.getenv("CHUNK_OVERLAP", 50))
 PROCESSED_LOG    = str(Path(CHROMA_DB_PATH) / "processed_files.json")
