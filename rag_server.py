@@ -455,6 +455,70 @@ def debug_ingest():
         }), 500
 
 
+@app.route("/test-pdf", methods=["GET"])
+def test_pdf():
+    """
+    Diagnosa cepat: tes ekstraksi teks + Gemini Vision OCR pada halaman pertama PDF.
+    Gunakan ?page=1 untuk tes halaman tertentu.
+    """
+    import traceback
+    import base64
+
+    page_num = int(request.args.get("page", 1)) - 1  # 0-indexed
+    docs_path = Path(DOCS_FOLDER)
+    pdf_files  = list(docs_path.glob("*.pdf"))
+
+    if not pdf_files:
+        return jsonify({"error": "Tidak ada PDF di docs folder"}), 404
+
+    pdf_path = str(pdf_files[0])
+    result   = {"file": pdf_files[0].name, "page_tested": page_num + 1}
+
+    # 1. Test PyMuPDF
+    try:
+        import fitz
+        doc = fitz.open(pdf_path)
+        result["total_pages"] = len(doc)
+        if page_num < len(doc):
+            text = doc[page_num].get_text("text")
+            result["pymupdf_chars"] = len(text)
+            result["pymupdf_preview"] = text[:300] if text else "(kosong)"
+        doc.close()
+    except Exception as e:
+        result["pymupdf_error"] = str(e)
+
+    # 2. Test Gemini Vision OCR pada halaman pertama
+    try:
+        import fitz
+        from google.genai import types as gtypes
+        doc      = fitz.open(pdf_path)
+        pg       = doc[min(page_num, len(doc)-1)]
+        pix      = pg.get_pixmap(dpi=150)
+        img_b64  = base64.b64encode(pix.tobytes("png")).decode()
+        img_bytes = pix.tobytes("png")
+        doc.close()
+
+        gc = get_genai_client()
+        response = gc.models.generate_content(
+            model=CHAT_MODEL,
+            contents=[
+                gtypes.Part(inline_data=gtypes.Blob(data=img_bytes, mime_type="image/png")),
+                gtypes.Part(text="Ekstrak semua teks dari halaman ini. Kembalikan hanya teks asli.")
+            ]
+        )
+        ocr_text = (response.text or "").strip()
+        result["ocr_chars"]   = len(ocr_text)
+        result["ocr_preview"] = ocr_text[:500] if ocr_text else "(kosong — kemungkinan halaman kosong atau gambar tidak terbaca)"
+        result["ocr_success"] = len(ocr_text) > 0
+
+    except Exception as e:
+        result["ocr_error"]     = str(e)
+        result["ocr_traceback"] = traceback.format_exc()
+        result["ocr_success"]   = False
+
+    return jsonify(result)
+
+
 # --- Error Handlers ----------------------------------------------------------
 
 @app.route("/", methods=["GET"])

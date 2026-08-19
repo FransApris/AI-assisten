@@ -390,7 +390,7 @@ def run_ingestion(target_file: str = None, reset: bool = False, force: bool = Fa
     total_chunks = 0
     results      = []
     for pdf_path in pdf_files:
-        n = ingest_pdf(str(pdf_path), collection, processed_log, force=reset)
+        n = ingest_pdf(str(pdf_path), collection, processed_log, force=(reset or force))
         total_chunks += n
         results.append({"file": pdf_path.name, "chunks": n})
 
