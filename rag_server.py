@@ -79,6 +79,20 @@ def get_genai_client():
         _genai_client = genai.Client(api_key=GEMINI_API_KEY)
     return _genai_client
 
+# Progress tracker untuk ingest — diakses via /ingest-progress
+_ingest_progress = {
+    "running":       False,
+    "stage":         "idle",      # idle | extracting | ocr | embedding | done | error
+    "current_file":  "",
+    "current_page":  0,
+    "total_pages":   0,
+    "chunks_saved":  0,
+    "message":       "",
+    "error":         None,
+    "started_at":    None,
+    "finished_at":   None,
+}
+
 app = Flask(__name__)
 CORS(app)
 
@@ -325,17 +339,39 @@ def trigger_ingest():
     ingest_status = {"running": True, "result": None, "error": None}
 
     def run_ingest():
+        global _ingest_progress
+        _ingest_progress.update({
+            "running": True, "stage": "extracting",
+            "current_file": file or "semua PDF",
+            "current_page": 0, "total_pages": 0,
+            "chunks_saved": 0, "error": None,
+            "message": "Memulai proses ingest...",
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+        })
         try:
-            # Import langsung dari ingest.py — error terlihat!
+            import ingest as ingest_module
+            # Inject progress callback ke ingest module
+            ingest_module._progress = _ingest_progress
             from ingest import run_ingestion
             result = run_ingestion(target_file=file, reset=reset)
-            ingest_status["result"] = result
+            _ingest_progress.update({
+                "stage": "done",
+                "chunks_saved": result.get("total_chunks", 0),
+                "message": f"Selesai! {result.get('total_chunks', 0)} chunks disimpan.",
+                "finished_at": datetime.now().isoformat(),
+            })
             print(f"[INGEST] Selesai: {result}", flush=True)
         except Exception as e:
-            ingest_status["error"] = str(e)
-            print(f"[INGEST ERROR] {e}", flush=True)
+            import traceback
+            _ingest_progress.update({
+                "stage": "error", "error": str(e),
+                "message": f"Error: {e}",
+                "finished_at": datetime.now().isoformat(),
+            })
+            print(f"[INGEST ERROR] {traceback.format_exc()}", flush=True)
         finally:
-            ingest_status["running"] = False
+            _ingest_progress["running"] = False
 
     thread = threading.Thread(target=run_ingest, daemon=True)
     thread.start()
@@ -344,8 +380,14 @@ def trigger_ingest():
         "status":  "ingest_started",
         "reset":   reset,
         "file":    file,
-        "message": "Proses ingest berjalan. Refresh dashboard setelah beberapa detik."
+        "message": "Proses ingest berjalan. Pantau di /ingest-progress."
     })
+
+
+@app.route("/ingest-progress", methods=["GET"])
+def ingest_progress():
+    """Progress real-time dari proses ingest yang sedang berjalan."""
+    return jsonify(_ingest_progress)
 
 
 @app.route("/debug-ingest", methods=["GET", "POST"])

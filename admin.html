@@ -808,6 +808,25 @@
           </div>
         </div>
       </div>
+
+      <!-- Progress Ingest Indicator -->
+      <div id="ingest-progress-card" class="card" style="display:none;margin-top:20px;border:1px solid var(--accent-blue);background:rgba(99,102,241,0.08);">
+        <div class="card-body" style="padding:20px;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+            <div style="width:12px;height:12px;border-radius:50%;background:var(--accent-blue);animation:pulse 1s infinite;flex-shrink:0;"></div>
+            <div style="font-weight:600;color:var(--accent-blue);" id="ingest-stage-label">Memproses...</div>
+          </div>
+          <div id="ingest-message" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">—</div>
+          <div style="background:var(--bg-primary);border-radius:8px;overflow:hidden;height:8px;">
+            <div id="ingest-progress-bar" style="height:100%;background:linear-gradient(90deg,var(--accent-blue),var(--accent-purple));border-radius:8px;transition:width 0.5s ease;width:0%;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:6px;">
+            <span id="ingest-page-info">Halaman 0/0</span>
+            <span id="ingest-chunks-info">0 chunks</span>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <!-- ═══ PAGE: UPLOAD ═══ -->
@@ -1458,8 +1477,68 @@ async function loadStatus() {
 ═══════════════════════════════════════════ */
 async function triggerIngest() {
   if (!serverOnline) { toast('Server tidak terhubung!', 'error'); return; }
-  toast('Memulai proses ingest ulang... cek terminal server.', 'info');
+  toast('Memulai ingest... pantau progress di bawah.', 'info');
   await apiFetch('/ingest', { method: 'POST', body: JSON.stringify({ reset: false }) });
+  startProgressPolling();
+}
+
+let _progressInterval = null;
+
+function startProgressPolling() {
+  // Tampilkan progress card
+  const card = document.getElementById('ingest-progress-card');
+  if (card) card.style.display = 'block';
+  // Poll setiap 2 detik
+  if (_progressInterval) clearInterval(_progressInterval);
+  _progressInterval = setInterval(async () => {
+    const p = await apiFetch('/ingest-progress');
+    if (!p) return;
+    updateProgressUI(p);
+    // Hentikan polling jika selesai
+    if (!p.running && (p.stage === 'done' || p.stage === 'error' || p.stage === 'idle')) {
+      clearInterval(_progressInterval);
+      _progressInterval = null;
+      // Refresh stats setelah 1 detik
+      setTimeout(() => { loadDashboard(); loadDocuments(); }, 1500);
+    }
+  }, 2000);
+}
+
+function updateProgressUI(p) {
+  const stageNames = {
+    idle: '⏸ Idle', extracting: '📄 Mengekstrak teks...',
+    ocr: '🤖 Gemini Vision OCR sedang berjalan...',
+    embedding: '🧠 Membuat embedding...', done: '✅ Selesai!', error: '❌ Error'
+  };
+  const el = {
+    card:    document.getElementById('ingest-progress-card'),
+    stage:   document.getElementById('ingest-stage-label'),
+    msg:     document.getElementById('ingest-message'),
+    bar:     document.getElementById('ingest-progress-bar'),
+    pageInfo:document.getElementById('ingest-page-info'),
+    chunks:  document.getElementById('ingest-chunks-info'),
+  };
+  if (!el.card) return;
+
+  if (p.stage === 'idle' && !p.running) { el.card.style.display = 'none'; return; }
+  el.card.style.display = 'block';
+
+  if (el.stage)    el.stage.textContent    = stageNames[p.stage] || p.stage;
+  if (el.msg)      el.msg.textContent      = p.message || '—';
+  if (el.pageInfo) el.pageInfo.textContent = `Halaman ${p.current_page}/${p.total_pages || '?'}`;
+  if (el.chunks)   el.chunks.textContent   = `${p.chunks_saved || 0} chunks`;
+
+  // Hitung progress bar %
+  let pct = 0;
+  if (p.stage === 'done') pct = 100;
+  else if (p.total_pages > 0) pct = Math.round((p.current_page / p.total_pages) * 100);
+  else if (p.stage === 'extracting') pct = 10;
+  else if (p.stage === 'embedding')  pct = 80;
+  if (el.bar) el.bar.style.width = pct + '%';
+
+  // Warna berbeda untuk error
+  if (p.stage === 'error' && el.bar) el.bar.style.background = '#ef4444';
+  if (p.stage === 'done'  && el.bar) el.bar.style.background = 'var(--success)';
 }
 
 function showResetModal() { document.getElementById('reset-modal').classList.add('show'); }
@@ -1468,9 +1547,9 @@ function hideResetModal() { document.getElementById('reset-modal').classList.rem
 async function confirmReset() {
   hideResetModal();
   if (!serverOnline) { toast('Server tidak terhubung!', 'error'); return; }
-  toast('Reset database dimulai... cek terminal server.', 'info');
+  toast('Reset database dimulai...', 'info');
   await apiFetch('/ingest', { method: 'POST', body: JSON.stringify({ reset: true }) });
-  setTimeout(() => { loadDashboard(); loadDocuments(); }, 2000);
+  startProgressPolling();
 }
 
 /* ═══════════════════════════════════════════

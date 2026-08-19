@@ -147,32 +147,51 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
 
     # === Metode 3: Gemini Vision OCR (untuk PDF scan) ===
     log("  Gemini Vision OCR: menggunakan AI untuk baca gambar halaman...", "info")
+
+    # Update progress jika ada tracker dari server
+    _prog = globals().get("_progress", None)
+    if _prog is not None:
+        _prog["stage"]   = "ocr"
+        _prog["message"] = "Gemini Vision OCR sedang berjalan..."
+
     try:
         import fitz
-        from google.genai import types as gtypes
 
         doc   = fitz.open(pdf_path)
         total = len(doc)
-        ocr_client = client  # gunakan client yang sudah diinit
+        ocr_client = client
+
+        if _prog is not None:
+            _prog["total_pages"] = total
 
         for i in range(total):
-            page = doc[i]
-            # Render halaman ke gambar 200 DPI
-            pix      = page.get_pixmap(dpi=200)
+            page      = doc[i]
+            pix       = page.get_pixmap(dpi=200)
             img_bytes = pix.tobytes("png")
 
+            if _prog is not None:
+                _prog["current_page"] = i + 1
+                _prog["message"]      = f"OCR halaman {i+1}/{total}..."
+
             try:
+                # API google-genai 2.x yang benar menggunakan types.Blob
                 response = ocr_client.models.generate_content(
                     model="gemini-1.5-flash",
                     contents=[
-                        gtypes.Part.from_bytes(data=img_bytes, mime_type="image/png"),
-                        "Ekstrak semua teks dari halaman dokumen ini. "
-                        "Kembalikan hanya teks asli tanpa format tambahan. "
-                        "Jika halaman berisi teks Bahasa Indonesia atau Belanda, "
-                        "transkripsi dengan akurat."
+                        types.Part(
+                            inline_data=types.Blob(
+                                data=img_bytes,
+                                mime_type="image/png"
+                            )
+                        ),
+                        types.Part(text=(
+                            "Ekstrak semua teks dari halaman dokumen ini dengan akurat. "
+                            "Kembalikan HANYA teks asli, tanpa komentar tambahan. "
+                            "Pertahankan struktur paragraf asli."
+                        ))
                     ]
                 )
-                text = response.text.strip() if response.text else ""
+                text = (response.text or "").strip()
                 if text:
                     pages.append({
                         "page_num":    i + 1,
@@ -180,7 +199,7 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
                         "text":        text,
                         "char_count":  len(text)
                     })
-                    log(f"  OCR hal.{i+1}: {len(text)} karakter", "info")
+                    log(f"  OCR hal.{i+1}/{total}: {len(text)} karakter OK", "info")
             except Exception as e:
                 log(f"  OCR gagal hal.{i+1}: {e}", "warn")
 
@@ -189,10 +208,10 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
         if pages:
             log(f"  Gemini OCR selesai: {len(pages)}/{total} halaman berhasil.", "ok")
         else:
-            log("  Semua metode gagal. PDF tidak bisa dibaca.", "error")
+            log("  Semua metode gagal. PDF mungkin tidak bisa dibaca.", "error")
 
     except Exception as e:
-        log(f"  Gemini Vision OCR gagal: {e}", "error")
+        log(f"  Gemini Vision OCR gagal total: {e}", "error")
 
     return pages
 
