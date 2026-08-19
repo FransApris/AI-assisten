@@ -44,8 +44,8 @@ load_dotenv()
 IS_PRODUCTION = os.getenv("RAILWAY_ENVIRONMENT") is not None
 
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
-CHAT_MODEL      = os.getenv("GEMINI_CHAT_MODEL",      "gemini-2.0-flash").strip()
-EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004").strip()
+CHAT_MODEL      = os.getenv("GEMINI_CHAT_MODEL",      "gemini-2.5-flash").strip()
+EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001").strip()
 
 # Di Railway: gunakan /data/* (Railway Volume di-mount ke /data)
 # Di lokal  : gunakan ./vectorstore dan ./docs

@@ -30,7 +30,7 @@ load_dotenv()
 
 IS_PRODUCTION    = os.getenv("RAILWAY_ENVIRONMENT") is not None
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-EMBEDDING_MODEL  = os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004").strip()
+EMBEDDING_MODEL  = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001").strip()
 
 DEFAULT_DB_PATH  = "/data/vectorstore" if IS_PRODUCTION else "./vectorstore"
 DEFAULT_DOCS     = "/data/docs"        if IS_PRODUCTION else "./docs"
