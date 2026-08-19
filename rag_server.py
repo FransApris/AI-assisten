@@ -29,25 +29,30 @@ from google.genai import types
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
-from colorama import init, Fore, Style
+from colorama import init
 
-# ─── Init ────────────────────────────────────────────────────────────────────
-init(autoreset=True, convert=True)  # convert=True untuk Windows
+# --- Init --------------------------------------------------------------------
+# colorama: convert=True hanya untuk Windows, di Linux tidak diperlukan
+if sys.platform == "win32":
+    init(autoreset=True, convert=True)
+else:
+    init(autoreset=True)
+
 load_dotenv()
 
 # Deteksi environment: Railway set RAILWAY_ENVIRONMENT otomatis
 IS_PRODUCTION = os.getenv("RAILWAY_ENVIRONMENT") is not None
 
-GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
 CHAT_MODEL        = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
 EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
 
-# Di Railway: gunakan /data/* (Railway Volume harus di-mount ke /data)
+# Di Railway: gunakan /data/* (Railway Volume di-mount ke /data)
 # Di lokal  : gunakan ./vectorstore dan ./docs
 DEFAULT_DB_PATH   = "/data/vectorstore" if IS_PRODUCTION else "./vectorstore"
 DEFAULT_DOCS      = "/data/docs"        if IS_PRODUCTION else "./docs"
 
-CHROMA_DB_PATH    = os.getenv("CHROMA_DB_PATH",       DEFAULT_DB_PATH)
+CHROMA_DB_PATH    = os.getenv("CHROMA_DB_PATH",        DEFAULT_DB_PATH)
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION_NAME", "apris_knowledge")
 TOP_K             = int(os.getenv("TOP_K_RESULTS", 5))
 # Railway otomatis set PORT — fallback ke 5050 untuk lokal
@@ -55,11 +60,24 @@ SERVER_PORT       = int(os.getenv("PORT", os.getenv("RAG_SERVER_PORT", 5050)))
 SERVER_HOST       = os.getenv("RAG_SERVER_HOST", "0.0.0.0")
 DOCS_FOLDER       = os.getenv("DOCS_FOLDER", DEFAULT_DOCS)
 
-# Buat folder jika belum ada
-Path(CHROMA_DB_PATH).mkdir(parents=True, exist_ok=True)
-Path(DOCS_FOLDER).mkdir(parents=True, exist_ok=True)
+# Buat folder dengan aman — jangan crash jika permission denied (Volume belum terpasang)
+try:
+    Path(CHROMA_DB_PATH).mkdir(parents=True, exist_ok=True)
+    Path(DOCS_FOLDER).mkdir(parents=True, exist_ok=True)
+except Exception as _mkdir_err:
+    print(f"[WARN] Tidak bisa buat folder: {_mkdir_err}")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Gemini client — dibuat lazy agar server bisa start walau API key belum diset
+_genai_client = None
+
+def get_genai_client():
+    """Lazy init Gemini client."""
+    global _genai_client
+    if _genai_client is None:
+        if not GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY belum diset. Tambahkan di Railway Variables.")
+        _genai_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _genai_client
 
 app = Flask(__name__)
 CORS(app)
@@ -78,7 +96,7 @@ def get_collection():
 # ─── Core RAG Functions ──────────────────────────────────────────────────────
 
 def get_query_embedding(text: str) -> list[float]:
-    result = client.models.embed_content(
+    result = get_genai_client().models.embed_content(
         model=EMBEDDING_MODEL,
         contents=text,
         config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
@@ -150,7 +168,7 @@ def generate_answer(query: str, chunks: list[dict]) -> str:
         return "Tidak ada dokumen relevan ditemukan dalam knowledge base. Pastikan PDF sudah diingest."
 
     prompt = build_prompt(query, chunks)
-    response = client.models.generate_content(
+    response = get_genai_client().models.generate_content(
         model=CHAT_MODEL,
         contents=prompt
     )
@@ -161,18 +179,28 @@ def generate_answer(query: str, chunks: list[dict]) -> str:
 
 @app.route("/status", methods=["GET"])
 def status():
-    """Status server dan database."""
-    collection  = get_collection()
-    doc_count   = collection.count() if collection else 0
-    docs_folder = os.path.abspath(DOCS_FOLDER)
-    pdf_count   = len(list(__import__("pathlib").Path(docs_folder).glob("*.pdf"))) if os.path.exists(docs_folder) else 0
+    """Status server dan database — selalu return 200 untuk healthcheck."""
+    try:
+        collection  = get_collection()
+        doc_count   = collection.count() if collection else 0
+    except Exception:
+        doc_count = 0
+
+    try:
+        docs_folder = os.path.abspath(DOCS_FOLDER)
+        pdf_count   = len(list(Path(docs_folder).glob("*.pdf"))) if os.path.exists(docs_folder) else 0
+    except Exception:
+        docs_folder = DOCS_FOLDER
+        pdf_count   = 0
 
     return jsonify({
         "status":       "online",
         "timestamp":    datetime.now().isoformat(),
+        "environment":  "production" if IS_PRODUCTION else "local",
+        "api_key_set":  bool(GEMINI_API_KEY),
         "database": {
-            "path":        os.path.abspath(CHROMA_DB_PATH),
-            "collection":  CHROMA_COLLECTION,
+            "path":         CHROMA_DB_PATH,
+            "collection":   CHROMA_COLLECTION,
             "total_chunks": doc_count
         },
         "docs_folder": {
