@@ -175,7 +175,13 @@ def generate_answer(query: str, chunks: list[dict]) -> str:
     return response.text
 
 
-# ─── API Endpoints ────────────────────────────────────────────────────────────
+# --- API Endpoints -----------------------------------------------------------
+
+@app.route("/favicon.ico", methods=["GET"])
+def favicon():
+    """Return empty favicon to prevent 404 log noise."""
+    return "", 204
+
 
 @app.route("/status", methods=["GET"])
 def status():

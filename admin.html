@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>APRIS — Admin Knowledge Base</title>
   <meta name="description" content="Admin dashboard untuk mengelola knowledge base PDF APRIS — upload, kelola, dan uji dokumen RAG." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -721,7 +722,7 @@
       <div class="dot" id="server-dot"></div>
       <div>
         <div style="font-size:12px;font-weight:600;" id="server-status-text">Menghubungkan...</div>
-        <div style="font-size:10px;color:var(--text-muted)" id="server-url">localhost:5050</div>
+        <div style="font-size:10px;color:var(--text-muted)" id="server-url-label"></div>
       </div>
     </div>
   </div>
@@ -1105,7 +1106,14 @@ async function checkServer() {
   const data = await apiFetch('/status');
   const dot  = document.getElementById('server-dot');
   const txt  = document.getElementById('server-status-text');
+  const urlEl = document.getElementById('server-url-label');
   serverOnline = !!data;
+
+  // Tampilkan URL aktual (Railway atau localhost)
+  const displayUrl = location.hostname === '127.0.0.1' || location.hostname === 'localhost'
+    ? `localhost:${location.port || 5050}`
+    : location.hostname;
+  if (urlEl) urlEl.textContent = displayUrl;
 
   if (data) {
     dot.className = 'dot online';
