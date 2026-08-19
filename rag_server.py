@@ -316,25 +316,26 @@ def ask():
 def trigger_ingest():
     """
     Trigger proses ingest PDF baru via API.
-    Berjalan di background thread.
-
-    Request body (JSON) - opsional:
-        {
-            "reset": false,   // reset database & proses ulang semua
-            "file": "buku.pdf"  // proses file spesifik
-        }
+    Berjalan di background thread dengan error logging.
     """
-    data   = request.get_json(silent=True) or {}
-    reset  = data.get("reset", False)
-    file   = data.get("file", None)
+    data  = request.get_json(silent=True) or {}
+    reset = data.get("reset", False)
+    file  = data.get("file",  None)
+
+    ingest_status = {"running": True, "result": None, "error": None}
 
     def run_ingest():
-        cmd = [sys.executable, "ingest.py"]
-        if reset:
-            cmd.append("--reset")
-        if file:
-            cmd.extend(["--file", file])
-        subprocess.run(cmd, cwd=os.path.dirname(os.path.abspath(__file__)))
+        try:
+            # Import langsung dari ingest.py — error terlihat!
+            from ingest import run_ingestion
+            result = run_ingestion(target_file=file, reset=reset)
+            ingest_status["result"] = result
+            print(f"[INGEST] Selesai: {result}", flush=True)
+        except Exception as e:
+            ingest_status["error"] = str(e)
+            print(f"[INGEST ERROR] {e}", flush=True)
+        finally:
+            ingest_status["running"] = False
 
     thread = threading.Thread(target=run_ingest, daemon=True)
     thread.start()
@@ -343,7 +344,7 @@ def trigger_ingest():
         "status":  "ingest_started",
         "reset":   reset,
         "file":    file,
-        "message": "Proses ingest berjalan di background. Cek terminal untuk progress."
+        "message": "Proses ingest berjalan. Refresh dashboard setelah beberapa detik."
     })
 
 
