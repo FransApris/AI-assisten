@@ -553,6 +553,26 @@ def test_embed():
     return jsonify(result)
 
 
+@app.route("/list-models", methods=["GET"])
+def list_models():
+    """List semua model yang tersedia untuk API key ini."""
+    try:
+        gc = get_genai_client()
+        models = gc.models.list()
+        names = sorted([m.name for m in models])
+        embed_models = [n for n in names if "embed" in n.lower()]
+        chat_models  = [n for n in names if "gemini" in n.lower() and "embed" not in n.lower()]
+        return jsonify({
+            "api_key_prefix":  GEMINI_API_KEY[:8] + "..." if GEMINI_API_KEY else "(kosong)",
+            "total_models":    len(names),
+            "embed_models":    embed_models,
+            "chat_models":     chat_models[:10],
+            "all_models":      names[:30],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "note": "API key mungkin tidak valid. Pastikan menggunakan key dari aistudio.google.com/apikey"}), 500
+
+
 # --- Error Handlers ----------------------------------------------------------
 
 @app.route("/", methods=["GET"])
