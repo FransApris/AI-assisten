@@ -50,7 +50,10 @@ if not GEMINI_API_KEY:
     print("[ERROR] GEMINI_API_KEY tidak ditemukan! Set di environment variable.")
     sys.exit(1)
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options={"api_version": "v1"}
+)
 
 # --- Helper ------------------------------------------------------------------
 

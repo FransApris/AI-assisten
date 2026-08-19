@@ -71,12 +71,15 @@ except Exception as _mkdir_err:
 _genai_client = None
 
 def get_genai_client():
-    """Lazy init Gemini client."""
+    """Lazy init Gemini client — pakai API v1 (bukan v1beta default)."""
     global _genai_client
     if _genai_client is None:
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY belum diset. Tambahkan di Railway Variables.")
-        _genai_client = genai.Client(api_key=GEMINI_API_KEY)
+        _genai_client = genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options={"api_version": "v1"}
+        )
     return _genai_client
 
 # Progress tracker untuk ingest — diakses via /ingest-progress
