@@ -519,6 +519,37 @@ def test_pdf():
     return jsonify(result)
 
 
+@app.route("/test-embed", methods=["GET"])
+def test_embed():
+    """Test Gemini embedding API — pastikan model dan API key benar."""
+    import traceback
+    result = {
+        "embedding_model": EMBEDDING_MODEL,
+        "chat_model":      CHAT_MODEL,
+        "api_key_set":     bool(GEMINI_API_KEY),
+        "api_key_prefix":  GEMINI_API_KEY[:8] + "..." if GEMINI_API_KEY else "(kosong)",
+    }
+    try:
+        gc = get_genai_client()
+        # Test embedding dengan teks pendek
+        emb = gc.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents="Test embedding dari APRIS RAG",
+            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
+        )
+        vals = emb.embeddings[0].values
+        result["embed_success"]  = True
+        result["embed_dims"]     = len(vals)
+        result["embed_preview"]  = vals[:5]
+        result["message"]        = f"✅ Embedding berhasil! Dimensi: {len(vals)}"
+    except Exception as e:
+        result["embed_success"]  = False
+        result["embed_error"]    = str(e)
+        result["embed_traceback"]= traceback.format_exc()
+        result["message"]        = f"❌ Embedding gagal: {e}"
+    return jsonify(result)
+
+
 # --- Error Handlers ----------------------------------------------------------
 
 @app.route("/", methods=["GET"])
