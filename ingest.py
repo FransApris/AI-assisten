@@ -93,10 +93,45 @@ def detect_language(text: str) -> str:
 # --- PDF Extraction ----------------------------------------------------------
 
 def extract_text_from_pdf(pdf_path: str) -> list[dict]:
+    """
+    Ekstrak teks dari PDF.
+    Coba PyMuPDF (fitz) dulu — lebih andal untuk banyak jenis PDF.
+    Fallback ke pdfplumber jika gagal.
+    """
     pages = []
+
+    # === Metode 1: PyMuPDF (fitz) ===
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(pdf_path)
+        total = len(doc)
+        log(f"  PyMuPDF: membaca {total} halaman...", "info")
+        for i in range(total):
+            page = doc[i]
+            text = page.get_text("text")
+            if text and text.strip():
+                pages.append({
+                    "page_num":    i + 1,
+                    "total_pages": total,
+                    "text":        text.strip(),
+                    "char_count":  len(text)
+                })
+        doc.close()
+
+        if pages:
+            log(f"  PyMuPDF berhasil: {len(pages)} halaman dengan teks.", "ok")
+            return pages
+        else:
+            log("  PyMuPDF: tidak ada teks terdeteksi — coba pdfplumber...", "warn")
+
+    except Exception as e:
+        log(f"  PyMuPDF gagal: {e} — coba pdfplumber...", "warn")
+
+    # === Metode 2: pdfplumber (fallback) ===
     try:
         with pdfplumber.open(pdf_path) as pdf:
             total = len(pdf.pages)
+            log(f"  pdfplumber: membaca {total} halaman...", "info")
             for i, page in enumerate(pdf.pages):
                 text = page.extract_text()
                 if text and text.strip():
@@ -106,8 +141,16 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
                         "text":        text.strip(),
                         "char_count":  len(text)
                     })
+
+        if pages:
+            log(f"  pdfplumber berhasil: {len(pages)} halaman dengan teks.", "ok")
+        else:
+            log("  pdfplumber: tidak ada teks! PDF mungkin berformat gambar/scan.", "error")
+            log("  Solusi: gunakan PDF yang bisa di-select teksnya, bukan hasil scan.", "error")
+
     except Exception as e:
-        log(f"Gagal baca PDF: {e}", "error")
+        log(f"  pdfplumber gagal: {e}", "error")
+
     return pages
 
 
