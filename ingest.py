@@ -269,9 +269,12 @@ def ingest_pdf(pdf_path: str, collection, processed_log: dict, force: bool = Fal
     file_md5 = file_hash(pdf_path)
 
     if not force and filename in processed_log:
-        if processed_log[filename].get("hash") == file_md5:
-            log(f"Dilewati (tidak berubah): {filename}", "info")
+        prev = processed_log[filename]
+        if prev.get("hash") == file_md5 and prev.get("chunks", 0) > 0:
+            log(f"Dilewati (sudah ada {prev['chunks']} chunks): {filename}", "info")
             return 0
+        elif prev.get("hash") == file_md5 and prev.get("chunks", 0) == 0:
+            log(f"Retry (sebelumnya 0 chunks): {filename}", "warn")
 
     log(f"Memproses: {filename}", "info")
 
@@ -356,14 +359,14 @@ def ingest_pdf(pdf_path: str, collection, processed_log: dict, force: bool = Fal
     return len(ids)
 
 
-def run_ingestion(target_file: str = None, reset: bool = False) -> dict:
+def run_ingestion(target_file: str = None, reset: bool = False, force: bool = False) -> dict:
     """Entry point untuk proses ingestion. Returns summary dict."""
     print("\n" + "="*55, flush=True)
     print("  APRIS RAG - PDF Ingestion", flush=True)
     print("="*55 + "\n", flush=True)
 
     collection    = get_chroma_collection(reset=reset)
-    processed_log = {} if reset else load_processed_log()
+    processed_log = {} if (reset or force) else load_processed_log()
 
     docs_path = Path(DOCS_FOLDER)
     docs_path.mkdir(exist_ok=True)

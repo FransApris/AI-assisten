@@ -335,6 +335,8 @@ def trigger_ingest():
     data  = request.get_json(silent=True) or {}
     reset = data.get("reset", False)
     file  = data.get("file",  None)
+    # force=True by default via API — retry bahkan jika sebelumnya 0 chunks
+    force = data.get("force", True)
 
     ingest_status = {"running": True, "result": None, "error": None}
 
@@ -354,7 +356,7 @@ def trigger_ingest():
             # Inject progress callback ke ingest module
             ingest_module._progress = _ingest_progress
             from ingest import run_ingestion
-            result = run_ingestion(target_file=file, reset=reset)
+            result = run_ingestion(target_file=file, reset=reset, force=force)
             _ingest_progress.update({
                 "stage": "done",
                 "chunks_saved": result.get("total_chunks", 0),
