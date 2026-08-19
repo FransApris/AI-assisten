@@ -348,7 +348,70 @@ def trigger_ingest():
     })
 
 
-# ─── Error Handlers ──────────────────────────────────────────────────────────
+@app.route("/debug-ingest", methods=["GET", "POST"])
+def debug_ingest():
+    """
+    Debug endpoint: jalankan ingest SINKRON dan tampilkan error detail.
+    GET: cek kondisi folder & file
+    POST: jalankan ingest sinkron pada 1 PDF pertama
+    """
+    import traceback
+
+    # Cek kondisi path
+    db_path   = Path(CHROMA_DB_PATH)
+    docs_path = Path(DOCS_FOLDER)
+
+    info = {
+        "paths": {
+            "chroma_db": str(db_path.resolve()),
+            "docs_folder": str(docs_path.resolve()),
+            "chroma_db_exists": db_path.exists(),
+            "docs_folder_exists": docs_path.exists(),
+        },
+        "env": {
+            "CHROMA_DB_PATH_raw": os.getenv("CHROMA_DB_PATH", "(not set)"),
+            "DOCS_FOLDER_raw":    os.getenv("DOCS_FOLDER",    "(not set)"),
+            "GEMINI_API_KEY_set": bool(GEMINI_API_KEY),
+            "IS_PRODUCTION":      IS_PRODUCTION,
+        },
+        "pdf_files": [],
+    }
+
+    if docs_path.exists():
+        info["pdf_files"] = [f.name for f in docs_path.glob("*.pdf")]
+
+    # Cek writability
+    try:
+        test_file = db_path / ".write_test"
+        db_path.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("ok")
+        test_file.unlink()
+        info["paths"]["chroma_db_writable"] = True
+    except Exception as e:
+        info["paths"]["chroma_db_writable"] = False
+        info["paths"]["chroma_db_write_error"] = str(e)
+
+    if request.method == "GET":
+        return jsonify(info)
+
+    # POST: jalankan ingest sinkron
+    if not info["pdf_files"]:
+        return jsonify({"error": "Tidak ada PDF di folder docs", "info": info}), 400
+
+    try:
+        from ingest import run_ingestion
+        result = run_ingestion(target_file=info["pdf_files"][0], reset=False)
+        return jsonify({"success": True, "result": result, "info": info})
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error":   str(e),
+            "traceback": traceback.format_exc(),
+            "info":    info
+        }), 500
+
+
+# --- Error Handlers ----------------------------------------------------------
 
 @app.route("/", methods=["GET"])
 @app.route("/admin", methods=["GET"])
