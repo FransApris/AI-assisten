@@ -80,7 +80,15 @@ Jika pengguna bertanya tentang jadwal mereka (contoh: "Apa jadwal saya hari ini?
 Jika pengguna meminta untuk mengecek, membacakan, atau merangkum email/kotak masuk terbaru mereka, sisipkan format ini persis seperti ini:
 <CHECK_EMAIL/>
 
-§6 BATASAN
+§6 CUACA DAN LOKASI
+Jika pengguna bertanya tentang cuaca (contoh: "Bagaimana cuaca di Jakarta hari ini?"), sisipkan format ini:
+<CHECK_WEATHER location="Nama Kota"/>
+
+§7 NOTION INTEGRATION
+Jika pengguna meminta untuk mencatat, menyimpan, atau menulis sesuatu ke Notion, sisipkan format ini:
+<NOTION_WRITE title="Judul Catatan">Isi catatan lengkap...</NOTION_WRITE>
+
+§8 BATASAN
 • DILARANG diagnosis medis definitif — arahkan ke dokter
 • DILARANG nasihat hukum mengikat — arahkan ke pengacara
 • Jujur jika tidak tahu atau data tidak real-time
@@ -189,6 +197,29 @@ CORS(app)
 def index():
     return send_from_directory("web_chat", "index.html")
 
+@app.route("/briefing")
+def briefing():
+    try:
+        import google_calendar
+        import google_gmail
+        from features import weather
+        
+        cal = google_calendar.get_upcoming_events(3)
+        eml = google_gmail.get_recent_emails(3)
+        # Default cuaca ke Jakarta jika tidak tahu lokasi user
+        wth = weather.get_weather_by_city("Jakarta")
+        
+        brief = (
+            "☀️ **Selamat Pagi! Berikut adalah Briefing Harian Anda:**\n\n"
+            f"🌤️ **Cuaca Hari Ini:**\n{wth}\n\n"
+            f"📅 **Jadwal Terdekat:**\n{cal}\n\n"
+            f"📧 **Email Belum Dibaca:**\n{eml}\n\n"
+            "Semoga hari Anda produktif! Ada yang bisa saya bantu hari ini?"
+        )
+        return jsonify({"briefing": brief})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/health")
 @app.route("/status")
@@ -278,15 +309,40 @@ def chat():
         # Pesan baru user (sudah diaugmentasi dengan konteks RAG)
         user_parts = [types.Part(text=augmented_msg)]
         
-        # Cek apakah ada gambar yang dilampirkan
-        image_base64 = data.get("image_base64")
-        if image_base64:
+        file_base64 = data.get("file_base64")
+        if file_base64:
             import base64
-            image_bytes = base64.b64decode(image_base64)
-            mime_type = data.get("image_mime", "image/jpeg")
-            user_parts.append(
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-            )
+            file_bytes = base64.b64decode(file_base64)
+            mime_type = data.get("file_mime", "application/octet-stream")
+            file_name = data.get("file_name", "document")
+
+            if mime_type.startswith("image/"):
+                user_parts.append(
+                    types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                )
+            else:
+                doc_text = ""
+                try:
+                    if "pdf" in mime_type:
+                        import fitz
+                        doc = fitz.open("pdf", file_bytes)
+                        for page in doc:
+                            doc_text += page.get_text()
+                        doc.close()
+                    elif "wordprocessingml" in mime_type or "msword" in mime_type:
+                        from docx import Document
+                        import io
+                        doc = Document(io.BytesIO(file_bytes))
+                        doc_text = "\n".join([para.text for para in doc.paragraphs])
+                    elif "text/plain" in mime_type:
+                        doc_text = file_bytes.decode('utf-8', errors='ignore')
+                    
+                    if doc_text:
+                        augmented_msg += f"\n\n---\n[Isi Dokumen {file_name}]:\n{doc_text}\n---\n"
+                        user_parts[0] = types.Part(text=augmented_msg)
+                except Exception as e:
+                    augmented_msg += f"\n\n---\n[Gagal membaca dokumen {file_name}: {str(e)}]\n---\n"
+                    user_parts[0] = types.Part(text=augmented_msg)
 
         contents.append(
             types.Content(role="user", parts=user_parts)
@@ -334,6 +390,38 @@ def chat():
                 apris_reply = apris_reply.replace("<CHECK_EMAIL/>", f"\n\n{email_data}")
             except Exception as e:
                 apris_reply = apris_reply.replace("<CHECK_EMAIL/>", f"\n\n_Gagal membaca email: {e}_")
+
+        # Intercept untuk fitur Weather
+        if "<CHECK_WEATHER" in apris_reply:
+            import re
+            match = re.search(r'<CHECK_WEATHER location="([^"]+)"\s*/>', apris_reply)
+            if match:
+                loc = match.group(1)
+                try:
+                    import sys
+                    sys.path.append(str(Path(__file__).parent))
+                    from features import weather
+                    w_data = weather.get_weather_by_city(loc)
+                    apris_reply = re.sub(r'<CHECK_WEATHER.*?\/>', f"\n\n*{w_data}*", apris_reply).strip()
+                except Exception as e:
+                    apris_reply = re.sub(r'<CHECK_WEATHER.*?\/>', f"\n\n_Gagal mengecek cuaca: {e}_", apris_reply).strip()
+
+        # Intercept untuk fitur Notion
+        if "<NOTION_WRITE" in apris_reply:
+            import re
+            match = re.search(r'<NOTION_WRITE title="([^"]+)">(.*?)</NOTION_WRITE>', apris_reply, re.DOTALL)
+            if match:
+                title = match.group(1).strip()
+                content = match.group(2).strip()
+                apris_reply = re.sub(r'<NOTION_WRITE.*?</NOTION_WRITE>', '', apris_reply, flags=re.DOTALL).strip()
+                try:
+                    import sys
+                    sys.path.append(str(Path(__file__).parent))
+                    from features import notion_api
+                    n_res = notion_api.write_to_notion(title, content)
+                    apris_reply += f"\n\n✅ *{n_res}*"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal menulis ke Notion: {e}_"
 
         # Intercept untuk fitur Google Docs Writer
         if "<CREATE_DOC" in apris_reply:

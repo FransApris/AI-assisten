@@ -294,22 +294,30 @@
 
   <!-- Input -->
   <div class="input-area">
-    <div id="image-preview-container" style="display:none; margin-bottom: 10px; position:relative; width: max-content;">
-      <img id="image-preview" style="max-height: 80px; border-radius: 8px; border: 1px solid var(--border);" src="" />
-      <button onclick="clearImage()" style="position:absolute; top:-5px; right:-5px; background:red; color:white; border:none; border-radius:50%; width:20px; height:20px; cursor:pointer; font-size:12px;">✖</button>
+    <div id="file-preview-container" style="display:none; margin-bottom: 10px; position:relative; width: max-content; background: var(--bg-body); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+      <span id="file-icon" style="font-size: 20px;">📄</span>
+      <span id="file-name" style="font-size: 14px; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></span>
+      <img id="image-preview" style="display:none; max-height: 80px; border-radius: 4px;" src="" />
+      <button onclick="clearFile()" style="background:red; color:white; border:none; border-radius:50%; width:20px; height:20px; cursor:pointer; font-size:12px; display:flex; align-items:center; justify-content:center;">✖</button>
     </div>
     <div class="input-wrap">
-      <input type="file" id="image-input" accept="image/*" style="display:none" onchange="previewImage(event)">
-      <button class="send-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="document.getElementById('image-input').click()" title="Lampirkan Gambar">
+      <input type="file" id="file-input" accept="image/*, application/pdf, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, text/plain" style="display:none" onchange="previewFile(event)">
+      <button class="send-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="document.getElementById('file-input').click()" title="Lampirkan Gambar atau Dokumen">
         📎
+      </button>
+      <button class="send-btn" id="mic-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="toggleVoiceInput()" title="Bicara (Voice Input)">
+        🎤
       </button>
       <textarea
         id="msg-input"
-        placeholder="Ketik pesan atau tanya tentang gambar..."
+        placeholder="Ketik pesan atau bicara..."
         rows="1"
         onkeydown="handleKey(event)"
         oninput="autoResize(this)"
       ></textarea>
+      <button class="send-btn" id="speaker-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="toggleVoiceOutput()" title="Auto Baca Suara: OFF">
+        🔇
+      </button>
       <button class="send-btn" id="send-btn" onclick="sendMessage()" title="Kirim (Enter)">
         ➤
       </button>
@@ -425,24 +433,44 @@
     return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   }
 
-  let currentImageBase64 = null;
+  let currentFileBase64 = null;
+  let currentFileName = null;
+  let currentFileMime = null;
 
-  function previewImage(event) {
+  function previewFile(event) {
     const file = event.target.files[0];
     if (!file) return;
+    
+    currentFileName = file.name;
+    currentFileMime = file.type || "application/octet-stream";
+    
+    const isImage = currentFileMime.startsWith("image/");
+
     const reader = new FileReader();
     reader.onload = function(e) {
-      currentImageBase64 = e.target.result; // data:image/png;base64,....
-      document.getElementById('image-preview').src = currentImageBase64;
-      document.getElementById('image-preview-container').style.display = 'block';
+      currentFileBase64 = e.target.result;
+      
+      document.getElementById('file-preview-container').style.display = 'flex';
+      document.getElementById('file-name').textContent = currentFileName;
+      
+      if (isImage) {
+        document.getElementById('image-preview').src = currentFileBase64;
+        document.getElementById('image-preview').style.display = 'block';
+        document.getElementById('file-icon').style.display = 'none';
+      } else {
+        document.getElementById('image-preview').style.display = 'none';
+        document.getElementById('file-icon').style.display = 'inline-block';
+      }
     };
     reader.readAsDataURL(file);
   }
 
-  function clearImage() {
-    currentImageBase64 = null;
-    document.getElementById('image-input').value = "";
-    document.getElementById('image-preview-container').style.display = 'none';
+  function clearFile() {
+    currentFileBase64 = null;
+    currentFileName = null;
+    currentFileMime = null;
+    document.getElementById('file-input').value = "";
+    document.getElementById('file-preview-container').style.display = 'none';
     document.getElementById('image-preview').src = "";
   }
 
@@ -451,26 +479,31 @@
     const input = document.getElementById("msg-input");
     const btn   = document.getElementById("send-btn");
     const text  = input.value.trim();
-    if (!text && !currentImageBase64) return;
+    if (!text && !currentFileBase64) return;
     if (isTyping) return;
 
     const now = new Date().toLocaleTimeString("id-ID", {hour:"2-digit",minute:"2-digit"});
     let displayHtml = text;
-    if (currentImageBase64) {
-      displayHtml = `<img src="${currentImageBase64}" style="max-width:100%; border-radius:8px; margin-bottom:8px;"><br>` + escapeHtml(text);
+    if (currentFileBase64) {
+      if (currentFileMime.startsWith("image/")) {
+        displayHtml = `<img src="${currentFileBase64}" style="max-width:100%; border-radius:8px; margin-bottom:8px;"><br>` + escapeHtml(text);
+      } else {
+        displayHtml = `<div style="background:var(--bg-card); padding:8px; border-radius:4px; margin-bottom:8px;">📄 <b>${currentFileName}</b></div>` + escapeHtml(text);
+      }
     }
     
-    // We bypass escapeHtml for the user message bubble because we are injecting an img tag safely
+    // We bypass escapeHtml for the user message bubble because we are injecting an img/div tag safely
     appendMsg("user", displayHtml, now, true);
     
     input.value = ""; input.style.height = "auto";
     const payload = { message: text, session_id: sessionId };
     
-    if (currentImageBase64) {
-      // Hilangkan header data:image/png;base64,
-      payload.image_base64 = currentImageBase64.split(',')[1];
-      payload.image_mime = currentImageBase64.split(';')[0].split(':')[1];
-      clearImage();
+    if (currentFileBase64) {
+      // Hilangkan header data:...;base64,
+      payload.file_base64 = currentFileBase64.split(',')[1];
+      payload.file_mime = currentFileMime;
+      payload.file_name = currentFileName;
+      clearFile();
     }
 
     isTyping = true; btn.disabled = true;
@@ -485,8 +518,13 @@
       const data = await res.json();
       hideTyping();
 
-      if (data.error) { showToast("Error: " + data.error); }
-      else { appendMsg("apris", data.reply, data.time || now); }
+      if (data.error) { 
+        showToast("Error: " + data.error); 
+      }
+      else { 
+        appendMsg("apris", data.reply, data.time || now); 
+        speakText(data.reply);
+      }
 
     } catch (err) {
       hideTyping();
@@ -538,8 +576,131 @@
     }
   }
 
+  // ── Voice Mode ────────────────────────────────────
+  let isVoiceOutputEnabled = false;
+  let recognition = null;
+  
+  if ('webkitSpeechRecognition' in window) {
+    recognition = new webkitSpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'id-ID';
+    
+    recognition.onstart = function() {
+      const micBtn = document.getElementById("mic-btn");
+      micBtn.style.background = "#ef4444";
+      micBtn.style.color = "white";
+      document.getElementById("msg-input").placeholder = "Mendengarkan...";
+    };
+    
+    recognition.onresult = function(event) {
+      let interimTranscript = '';
+      let finalTranscript = '';
+      
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+      
+      const input = document.getElementById("msg-input");
+      if (finalTranscript) {
+        input.value = finalTranscript;
+        sendMessage();
+      } else {
+        input.value = interimTranscript;
+      }
+    };
+    
+    recognition.onerror = function(event) {
+      console.error("Speech recognition error", event.error);
+      resetMicUI();
+    };
+    
+    recognition.onend = function() {
+      resetMicUI();
+    };
+  }
+  
+  function resetMicUI() {
+    const micBtn = document.getElementById("mic-btn");
+    micBtn.style.background = "var(--bg-card)";
+    micBtn.style.color = "var(--text-2)";
+    document.getElementById("msg-input").placeholder = "Ketik pesan atau bicara...";
+  }
+
+  function toggleVoiceInput() {
+    if (!recognition) {
+      showToast("Browser Anda tidak mendukung fitur mikrofon (Speech Recognition).");
+      return;
+    }
+    try {
+      recognition.start();
+    } catch(e) {
+      recognition.stop();
+    }
+  }
+
+  function toggleVoiceOutput() {
+    isVoiceOutputEnabled = !isVoiceOutputEnabled;
+    const btn = document.getElementById("speaker-btn");
+    if (isVoiceOutputEnabled) {
+      btn.textContent = "🔊";
+      btn.title = "Auto Baca Suara: ON";
+      showToast("Fitur baca otomatis diaktifkan.");
+    } else {
+      btn.textContent = "🔇";
+      btn.title = "Auto Baca Suara: OFF";
+      window.speechSynthesis.cancel();
+      showToast("Fitur baca otomatis dinonaktifkan.");
+    }
+  }
+
+  function speakText(text) {
+    if (!isVoiceOutputEnabled) return;
+    window.speechSynthesis.cancel();
+    
+    // Hapus tag HTML, markdown, emoji
+    let plainText = text.replace(/<[^>]+>/g, '')
+                        .replace(/[#_*~`]/g, '')
+                        .replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '');
+                        
+    const msg = new SpeechSynthesisUtterance(plainText);
+    msg.lang = 'id-ID';
+    msg.rate = 1.0;
+    
+    // Gunakan suara Google Indonesia jika tersedia
+    const voices = window.speechSynthesis.getVoices();
+    const idVoice = voices.find(v => v.lang === 'id-ID' && v.name.includes('Google'));
+    if (idVoice) msg.voice = idVoice;
+    
+    window.speechSynthesis.speak(msg);
+  }
+
+  async function fetchBriefing() {
+    try {
+      const res = await fetch(`${API}/briefing`);
+      const data = await res.json();
+      if (data.briefing) {
+        const now = new Date().toLocaleTimeString("id-ID", {hour:"2-digit",minute:"2-digit"});
+        // Cek jika belum ada pesan (selain welcome screen)
+        const area = document.getElementById("chat-area");
+        if (area.querySelectorAll('.msg-row').length === 0) {
+          // Hapus welcome screen agar briefing masuk dengan rapi
+          area.innerHTML = '';
+          appendMsg("apris", data.briefing, now);
+        }
+      }
+    } catch (e) {
+      console.log("Briefing failed to load");
+    }
+  }
+
   // Init
   checkStatus();
+  fetchBriefing();
   setInterval(checkStatus, 30000);
   document.getElementById("msg-input").focus();
 </script>
