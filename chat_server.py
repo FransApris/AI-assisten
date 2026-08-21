@@ -25,10 +25,18 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-CHAT_MODEL     = os.getenv("GEMINI_CHAT_MODEL", "models/gemini-2.5-flash")
+GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
+CHAT_MODEL        = os.getenv("GEMINI_CHAT_MODEL", "models/gemini-2.5-flash")
+EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
 # Railway set PORT otomatis; fallback ke 5052 untuk lokal
-SERVER_PORT    = int(os.getenv("PORT", os.getenv("CHAT_SERVER_PORT", 5052)))
+SERVER_PORT       = int(os.getenv("PORT", os.getenv("CHAT_SERVER_PORT", 5052)))
+
+# RAG Knowledge Base config
+_RAG_DEFAULT  = str(Path(__file__).resolve().parent.parent / "rag-knowledge" / "vectorstore")
+RAG_DB_PATH       = os.getenv("RAG_DB_PATH", _RAG_DEFAULT)
+RAG_COLLECTION    = os.getenv("RAG_COLLECTION", "apris_knowledge")
+RAG_TOP_K         = int(os.getenv("RAG_TOP_K", 3))
+RAG_ENABLED       = os.getenv("RAG_ENABLED", "true").lower() == "true"
 
 # Timezone WIB (UTC+7) — fallback tanpa tzdata
 try:
@@ -70,8 +78,9 @@ Zona Waktu: WIB (Asia/Jakarta) | Bahasa: Indonesia | Versi: APRIS v3.0"""
 # ---------------------------------------------------------------------------
 # Gemini client & session history
 # ---------------------------------------------------------------------------
-_genai_client = None
+_genai_client  = None
 _chat_sessions = {}   # session_id → list of messages
+_chroma_col    = None  # ChromaDB collection (lazy load)
 
 
 def get_client():
@@ -80,6 +89,52 @@ def get_client():
         from google import genai
         _genai_client = genai.Client(api_key=GEMINI_API_KEY)
     return _genai_client
+
+
+def get_chroma():
+    """Buat ChromaDB connection baru (thread-safe: tiap request punya client sendiri)."""
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=RAG_DB_PATH)
+        col = client.get_collection(RAG_COLLECTION)
+        return col
+    except Exception as e:
+        return None
+
+
+def rag_retrieve(query: str, top_k: int = None) -> str:
+    """
+    Cari konteks relevan dari Knowledge Base.
+    Return: string konteks untuk diinjeksi ke prompt, atau string kosong.
+    """
+    if not RAG_ENABLED:
+        return ""
+    col = get_chroma()
+    if col is None:
+        return ""
+    try:
+        k   = top_k or RAG_TOP_K
+        emb = get_client().models.embed_content(
+            model=EMBEDDING_MODEL, contents=[query]
+        )
+        vec     = emb.embeddings[0].values
+        results = col.query(query_embeddings=[vec], n_results=k)
+        docs    = results.get("documents", [[]])[0]
+        metas   = results.get("metadatas", [[]])[0]
+        if not docs:
+            return ""
+        # Format konteks — dedup per sumber
+        parts = []
+        seen  = set()
+        for doc, meta in zip(docs, metas):
+            src = meta.get("source", "knowledge base")
+            if src not in seen:
+                seen.add(src)
+                parts.append(f"[Sumber: {src}]\n{doc[:700]}")
+        return "\n\n".join(parts)
+    except Exception as e:
+        print(f"[RAG] Retrieval error: {e}")
+        return ""
 
 
 def get_or_create_session(session_id: str) -> list:
@@ -103,6 +158,11 @@ def index():
 @app.route("/health")
 @app.route("/status")
 def status():
+    rag_ok = get_chroma() is not None
+    rag_count = 0
+    if rag_ok:
+        try: rag_count = get_chroma().count()
+        except: pass
     return jsonify({
         "status"    : "online",
         "model"     : CHAT_MODEL,
@@ -110,6 +170,7 @@ def status():
         "timestamp" : datetime.now(TZ).isoformat(),
         "sessions"  : len(_chat_sessions),
         "env"       : "railway" if os.getenv("RAILWAY_ENVIRONMENT") else "local",
+        "rag"       : {"enabled": RAG_ENABLED, "connected": rag_ok, "chunks": rag_count},
     })
 
 
@@ -154,9 +215,22 @@ def chat():
                 )
             )
 
-        # Pesan baru user
+        # RAG: cari konteks relevan dari Knowledge Base
+        rag_context = rag_retrieve(user_msg)
+        if rag_context:
+            augmented_msg = (
+                f"{user_msg}\n\n"
+                f"---\n"
+                f"[Konteks dari Knowledge Base APRIS — gunakan jika relevan]:\n"
+                f"{rag_context}\n"
+                f"---"
+            )
+        else:
+            augmented_msg = user_msg
+
+        # Pesan baru user (sudah diaugmentasi dengan konteks RAG)
         contents.append(
-            types.Content(role="user", parts=[types.Part(text=user_msg)])
+            types.Content(role="user", parts=[types.Part(text=augmented_msg)])
         )
 
         response = client.models.generate_content(
@@ -172,10 +246,11 @@ def chat():
         history.append({"role": "apris", "content": apris_reply, "time": now_str})
 
         return jsonify({
-            "reply"     : apris_reply,
-            "session_id": session_id,
-            "time"      : now_str,
-            "model"     : CHAT_MODEL,
+            "reply"      : apris_reply,
+            "session_id" : session_id,
+            "time"       : now_str,
+            "model"      : CHAT_MODEL,
+            "rag_used"   : bool(rag_context),
         })
 
     except Exception as e:
@@ -207,10 +282,16 @@ if __name__ == "__main__":
     is_railway = bool(os.getenv("RAILWAY_ENVIRONMENT"))
     print(f"\n{'='*50}")
     print(f"  APRIS Web Chat Server")
-    print(f"  Model : {CHAT_MODEL}")
-    print(f"  Port  : {SERVER_PORT}")
-    print(f"  Env   : {'Railway ☁️' if is_railway else 'Lokal 💻'}")
+    print(f"  Model   : {CHAT_MODEL}")
+    print(f"  Port    : {SERVER_PORT}")
+    print(f"  Env     : {'Railway' if is_railway else 'Lokal'}")
+    print(f"  RAG DB  : {RAG_DB_PATH}")
+    rag_col = get_chroma()
+    if rag_col:
+        print(f"  RAG     : Terhubung ({rag_col.count()} chunk)")
+    else:
+        print(f"  RAG     : Tidak tersedia (chat tetap berjalan)")
     if not is_railway:
-        print(f"  URL   : http://localhost:{SERVER_PORT}")
+        print(f"  URL     : http://localhost:{SERVER_PORT}")
     print(f"{'='*50}\n")
     app.run(host="0.0.0.0", port=SERVER_PORT, debug=False)
