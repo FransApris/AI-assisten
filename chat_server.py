@@ -88,7 +88,13 @@ Jika pengguna bertanya tentang cuaca (contoh: "Bagaimana cuaca di Jakarta hari i
 Jika pengguna meminta untuk mencatat, menyimpan, atau menulis sesuatu ke Notion, sisipkan format ini:
 <NOTION_WRITE title="Judul Catatan">Isi catatan lengkap...</NOTION_WRITE>
 
-§8 BATASAN
+§8 LONG-TERM MEMORY (INGATAN PERMANEN)
+Jika pengguna meminta Anda untuk mengingat sesuatu tentang mereka (contoh: "Ingat ya, saya alergi kacang"), sisipkan tag berikut ke dalam jawaban Anda:
+<REMEMBER fact="Pengguna alergi kacang"/>
+Jika pengguna meminta Anda untuk melupakan sesuatu yang sudah Anda ingat, sisipkan tag berikut:
+<FORGET fact="alergi kacang"/>
+
+§9 BATASAN
 • DILARANG diagnosis medis definitif — arahkan ke dokter
 • DILARANG nasihat hukum mengikat — arahkan ke pengacara
 • Jujur jika tidak tahu atau data tidak real-time
@@ -298,9 +304,18 @@ def chat():
                 scraped_texts.append(f"--- Konten dari {url} ---\n{web_scraper.scrape_url_text(url)}")
             url_context = "\n\n".join(scraped_texts)
 
+        # Long-Term Memory: tarik fakta pengguna
+        try:
+            from features import memory
+            long_term_memory = memory.get_all_memories()
+        except Exception:
+            long_term_memory = ""
+
         augmented_msg = user_msg
-        if rag_context or url_context:
+        if rag_context or url_context or long_term_memory:
             augmented_msg += "\n\n"
+            if long_term_memory:
+                augmented_msg += f"---\n[Konteks dari Long-Term Memory]:\n{long_term_memory}\n---\n\n"
             if rag_context:
                 augmented_msg += f"---\n[Konteks dari Knowledge Base APRIS]:\n{rag_context}\n---\n\n"
             if url_context:
@@ -422,6 +437,34 @@ def chat():
                     apris_reply += f"\n\n✅ *{n_res}*"
                 except Exception as e:
                     apris_reply += f"\n\n_Gagal menulis ke Notion: {e}_"
+
+        # Intercept untuk fitur Long-Term Memory
+        if "<REMEMBER" in apris_reply or "<FORGET" in apris_reply:
+            import re
+            try:
+                import sys
+                sys.path.append(str(Path(__file__).parent))
+                from features import memory
+                
+                # Proses Remember
+                rem_match = re.search(r'<REMEMBER fact="([^"]+)"\s*/>', apris_reply)
+                if rem_match:
+                    fact = rem_match.group(1).strip()
+                    apris_reply = re.sub(r'<REMEMBER.*?\/>', '', apris_reply).strip()
+                    res = memory.add_memory(fact)
+                    apris_reply += f"\n\n🧠 *{res}*"
+                    
+                # Proses Forget
+                for_match = re.search(r'<FORGET fact="([^"]+)"\s*/>', apris_reply)
+                if for_match:
+                    fact = for_match.group(1).strip()
+                    apris_reply = re.sub(r'<FORGET.*?\/>', '', apris_reply).strip()
+                    res = memory.remove_memory(fact)
+                    apris_reply += f"\n\n🧠 *{res}*"
+                    
+            except Exception as e:
+                pass # Abaikan jika gagal
+
 
         # Intercept untuk fitur Google Docs Writer
         if "<CREATE_DOC" in apris_reply:
