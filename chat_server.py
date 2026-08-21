@@ -60,15 +60,23 @@ Anda menguasai: produktivitas, informasi, keuangan, humaniora (sastra, filsafat 
 • Terapkan economy of words — langsung ke inti, tanpa basa-basi
 • DILARANG sapaan berulang: "Halo!", "Tentu saja!", "Baik, saya akan..."
 • DILARANG kalimat penutup: "Semoga membantu!", "Jangan ragu bertanya!"
-• Bahasa Indonesia baku, lugas, bebas filler words
+• Jawaban WAJIB dalam format WhatsApp: *tebal* untuk penekanan/judul, _miring_ untuk kutipan/istilah.
+• Gunakan bullet points (-) untuk daftar.
+• Tulis dengan nada analitis, objektif, dan logis. Tanpa emoji berlebihan.
 
-§3 FORMAT
-• Gunakan bullet (•) untuk daftar 3+ item
-• **Teks tebal** untuk istilah penting & metrik
-• Pemisah (---) untuk transisi topik
-• Respons proporsional: singkat untuk pertanyaan sederhana, terstruktur untuk kompleks
+§3 PEMBUATAN DOKUMEN GOOGLE DRIVE
+Jika pengguna meminta Anda untuk membuat/menulis/menyusun dokumen, laporan, resep, atau catatan panjang, Anda HARUS menyisipkan format persis seperti ini di akhir atau sebagai keseluruhan respons Anda:
+<CREATE_DOC title="Judul Dokumen">Isi dokumen (lengkap dan detail) di sini...</CREATE_DOC>
+PENTING: Hanya gunakan tag ini jika pengguna benar-benar meminta untuk dibuatkan dokumen/catatan/laporan yang disimpan.
 
-§4 BATASAN
+§4 PENGELOLAAN KALENDER
+Jika pengguna meminta untuk membuat/menjadwalkan agenda di kalender, sisipkan format ini:
+<CREATE_EVENT title="Judul Acara" start="YYYY-MM-DDTHH:MM:SS+07:00" end="YYYY-MM-DDTHH:MM:SS+07:00">Deskripsi singkat acara...</CREATE_EVENT>
+Gunakan format ISO 8601 dengan zona waktu WIB (+07:00). 
+Jika pengguna bertanya tentang jadwal mereka (contoh: "Apa jadwal saya hari ini?"), sisipkan:
+<CHECK_CALENDAR/>
+
+§5 BATASAN
 • DILARANG diagnosis medis definitif — arahkan ke dokter
 • DILARANG nasihat hukum mengikat — arahkan ke pengacara
 • Jujur jika tidak tahu atau data tidak real-time
@@ -222,8 +230,10 @@ def chat():
 
         # Sisipkan system prompt sebagai pesan pertama user/model
         if not history:
+            now_str_full = datetime.now(TZ).strftime("%A, %Y-%m-%d %H:%M:%S %z")
+            dynamic_prompt = f"[SYSTEM]\nWaktu saat ini: {now_str_full}\n\n{SYSTEM_PROMPT}"
             contents.append(
-                types.Content(role="user",  parts=[types.Part(text=f"[SYSTEM]\n{SYSTEM_PROMPT}")])
+                types.Content(role="user",  parts=[types.Part(text=dynamic_prompt)])
             )
             contents.append(
                 types.Content(role="model", parts=[types.Part(text="Siap. Saya adalah APRIS.")])
@@ -259,6 +269,53 @@ def chat():
         response = generate_with_retry(client, CHAT_MODEL, contents)
 
         apris_reply = response.text.strip()
+        
+        # Intercept untuk fitur Google Calendar (Check)
+        if "<CHECK_CALENDAR/>" in apris_reply:
+            import google_calendar
+            try:
+                cal_data = google_calendar.get_upcoming_events(5)
+                apris_reply = apris_reply.replace("<CHECK_CALENDAR/>", f"\n\n{cal_data}")
+            except Exception as e:
+                apris_reply = apris_reply.replace("<CHECK_CALENDAR/>", f"\n\n_Gagal membaca kalender: {e}_")
+                
+        # Intercept untuk fitur Google Calendar (Create)
+        if "<CREATE_EVENT" in apris_reply:
+            import re
+            import google_calendar
+            match = re.search(r'<CREATE_EVENT title="([^"]+)" start="([^"]+)" end="([^"]+)">(.*?)</CREATE_EVENT>', apris_reply, re.DOTALL)
+            if match:
+                title, start_t, end_t, desc = match.groups()
+                apris_reply = re.sub(r'<CREATE_EVENT.*?</CREATE_EVENT>', '', apris_reply, flags=re.DOTALL).strip()
+                try:
+                    res = google_calendar.create_event(title, start_t, end_t, desc.strip())
+                    apris_reply += f"\n\n✅ *{res}*"
+                except Exception as e:
+                    apris_reply += f"\n\n_Maaf, gagal membuat jadwal: {e}_"
+
+        # Intercept untuk fitur Google Docs Writer
+        if "<CREATE_DOC" in apris_reply:
+            import re
+            import google_drive
+            
+            # Cari tag <CREATE_DOC title="...">...</CREATE_DOC>
+            match = re.search(r'<CREATE_DOC title="([^"]+)">(.*?)</CREATE_DOC>', apris_reply, re.DOTALL)
+            if match:
+                title = match.group(1).strip()
+                content = match.group(2).strip()
+                
+                # Hapus tag dari balasan asli
+                apris_reply = re.sub(r'<CREATE_DOC.*?</CREATE_DOC>', '', apris_reply, flags=re.DOTALL).strip()
+                
+                # Buat dokumen via Google Drive API
+                try:
+                    doc_url = google_drive.create_google_doc(title, content)
+                    if "Error" in doc_url:
+                        apris_reply += f"\n\n_Maaf, gagal membuat dokumen: {doc_url}_"
+                    else:
+                        apris_reply += f"\n\n✅ *Dokumen berhasil dibuat!*\nJudul: {title}\nBuka dokumen: {doc_url}"
+                except Exception as e:
+                    apris_reply += f"\n\n_Maaf, terjadi kesalahan saat membuat dokumen: {str(e)}_"
 
         # Simpan ke history sesi
         now_str = datetime.now(TZ).strftime("%H:%M")

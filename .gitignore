@@ -10,3 +10,12 @@ reminders.db
 .venv/
 venv/
 node_modules/
+
+# OAuth Credentials
+*.json
+!package.json
+!package-lock.json
+
+# Temp files
+*.txt
+rag-knowledge/
