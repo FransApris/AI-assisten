@@ -94,7 +94,11 @@ Jika pengguna meminta Anda untuk mengingat sesuatu tentang mereka (contoh: "Inga
 Jika pengguna meminta Anda untuk melupakan sesuatu yang sudah Anda ingat, sisipkan tag berikut:
 <FORGET fact="alergi kacang"/>
 
-§9 BATASAN
+§9 PENGINGAT MEDIS (PILL TRACKER)
+Jika pengguna menyebutkan bahwa mereka harus mengonsumsi obat tertentu secara rutin pada jam tertentu, jadwalkan pengingat menggunakan tag berikut:
+<ADD_MEDICINE name="NamaObat" time="HH:MM" reason="Alasan medis/Manfaat obat"/>
+
+§10 BATASAN
 • DILARANG diagnosis medis definitif — arahkan ke dokter
 • DILARANG nasihat hukum mengikat — arahkan ke pengacara
 • Jujur jika tidak tahu atau data tidak real-time
@@ -226,6 +230,25 @@ def briefing():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/meds")
+def get_meds():
+    try:
+        from features import medical
+        return jsonify({"meds": medical.get_all_meds()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/meds/take", methods=["POST"])
+def take_meds():
+    try:
+        data = request.get_json()
+        name = data.get("name")
+        time = data.get("time")
+        from features import medical
+        res = medical.mark_taken(name, time)
+        return jsonify({"success": res})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/health")
 @app.route("/status")
@@ -311,9 +334,18 @@ def chat():
         except Exception:
             long_term_memory = ""
 
+        # Medical Module: tarik status obat
+        try:
+            from features import medical
+            medical_context = medical.get_meds_summary()
+        except Exception:
+            medical_context = ""
+
         augmented_msg = user_msg
-        if rag_context or url_context or long_term_memory:
+        if rag_context or url_context or long_term_memory or medical_context:
             augmented_msg += "\n\n"
+            if medical_context:
+                augmented_msg += f"---\n[Konteks Medis Pengguna]:\n{medical_context}\n---\n\n"
             if long_term_memory:
                 augmented_msg += f"---\n[Konteks dari Long-Term Memory]:\n{long_term_memory}\n---\n\n"
             if rag_context:
@@ -464,6 +496,24 @@ def chat():
                     
             except Exception as e:
                 pass # Abaikan jika gagal
+
+        # Intercept untuk fitur Pengingat Obat
+        if "<ADD_MEDICINE" in apris_reply:
+            import re
+            match = re.search(r'<ADD_MEDICINE name="([^"]+)" time="([^"]+)" reason="([^"]+)"\s*/>', apris_reply)
+            if match:
+                m_name = match.group(1).strip()
+                m_time = match.group(2).strip()
+                m_reason = match.group(3).strip()
+                apris_reply = re.sub(r'<ADD_MEDICINE.*?\/>', '', apris_reply).strip()
+                try:
+                    import sys
+                    sys.path.append(str(Path(__file__).parent))
+                    from features import medical
+                    res = medical.add_medicine(m_name, m_time, m_reason)
+                    apris_reply += f"\n\n💊 *{res}*"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal menambahkan jadwal obat: {e}_"
 
 
         # Intercept untuk fitur Google Docs Writer

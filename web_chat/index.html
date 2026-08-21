@@ -141,6 +141,42 @@
       transform: translateY(-1px);
     }
 
+    /* ── Medical Panel ───────────────────────────── */
+    .medical-panel {
+      position: absolute; top: 16px; right: 16px; width: 280px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px; font-size: 13px; z-index: 100;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2); display: none;
+    }
+    .medical-panel h3 { font-size: 14px; margin-bottom: 8px; color: var(--accent); display:flex; align-items:center; gap:6px;}
+    .med-item { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .med-item:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+    .med-info { flex: 1; }
+    .med-name { font-weight: 600; color: var(--text-1); }
+    .med-time { font-size: 11px; color: var(--text-2); }
+    .med-check { cursor: pointer; transform: scale(1.2); }
+
+    /* ── Alarm Overlay ───────────────────────────── */
+    #alarm-overlay {
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(239, 68, 68, 0.9); z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: white; font-family: 'Inter', sans-serif; display: none;
+      animation: flash 1s infinite alternate;
+    }
+    @keyframes flash {
+      from { background: rgba(239, 68, 68, 0.9); }
+      to { background: rgba(239, 68, 68, 0.7); }
+    }
+    #alarm-overlay h1 { font-size: 48px; margin-bottom: 10px; font-weight: 800; }
+    #alarm-overlay h2 { font-size: 24px; margin-bottom: 30px; font-weight: 400; }
+    #alarm-overlay button {
+      padding: 16px 32px; font-size: 20px; font-weight: bold; border-radius: 30px;
+      border: none; background: white; color: #ef4444; cursor: pointer;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3); transition: transform 0.2s;
+    }
+    #alarm-overlay button:hover { transform: scale(1.05); }
+
     /* ── Message Bubble ───────────────────────────── */
     .msg { display: flex; gap: 10px; animation: slide-up .3s ease; max-width: 100%; }
     @keyframes slide-up {
@@ -262,6 +298,22 @@
   </style>
 </head>
 <body>
+
+  <!-- Alarm Overlay -->
+  <div id="alarm-overlay">
+    <h1>🔔 WAKTUNYA MINUM OBAT!</h1>
+    <h2 id="alarm-med-name">Obat Jantung</h2>
+    <button onclick="stopAlarm()">Sudah Diminum</button>
+  </div>
+
+  <!-- Medical Panel -->
+  <div class="medical-panel" id="medical-panel">
+    <h3>⚕️ Jadwal Obat Hari Ini</h3>
+    <div id="med-list">
+      <!-- Item obat diisi oleh JS -->
+    </div>
+  </div>
+
 <div class="app">
 
   <!-- Header -->
@@ -792,10 +844,100 @@
     }
   }
 
+  // ── Medical Tracker ───────────────────────────────
+  let medsData = [];
+  let alarmActive = false;
+
+  async function fetchMeds() {
+      try {
+          const res = await fetch(`${API}/meds`);
+          const data = await res.json();
+          if (data.meds && data.meds.length > 0) {
+              medsData = data.meds;
+              document.getElementById("medical-panel").style.display = "block";
+              
+              const list = document.getElementById("med-list");
+              list.innerHTML = "";
+              const today = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD
+              
+              data.meds.forEach(m => {
+                  const isTaken = (m.last_taken === today);
+                  list.innerHTML += `
+                      <div class="med-item">
+                          <div class="med-info">
+                              <div class="med-name">${m.name}</div>
+                              <div class="med-time">Jam: ${m.time} | ${m.reason}</div>
+                          </div>
+                          <div class="med-check" onclick="${isTaken ? '' : `takeMedicine('${m.name}', '${m.time}')`}">${isTaken ? '✅' : '⏳'}</div>
+                      </div>
+                  `;
+              });
+          }
+      } catch(e) {}
+  }
+
+  async function takeMedicine(name, time) {
+      if (alarmActive) stopAlarm();
+      try {
+          await fetch(`${API}/meds/take`, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({name, time})
+          });
+          fetchMeds(); // refresh list
+          appendMsg("apris", `Bagus! Anda telah meminum ${name}. Tetap sehat ya!`, new Date().toLocaleTimeString("id-ID", {hour:"2-digit",minute:"2-digit"}));
+          speakText(`Bagus! Anda telah meminum ${name}. Tetap sehat ya!`);
+      } catch(e) {}
+  }
+
+  function checkMedsAlarm() {
+      if (alarmActive) return;
+      const now = new Date();
+      const h = String(now.getHours()).padStart(2, '0');
+      const m = String(now.getMinutes()).padStart(2, '0');
+      const currentTime = `${h}:${m}`;
+      const today = now.toLocaleDateString("sv-SE");
+
+      for (let med of medsData) {
+          if (med.time === currentTime && med.last_taken !== today) {
+              alarmActive = true;
+              document.getElementById("alarm-overlay").style.display = "flex";
+              document.getElementById("alarm-med-name").innerText = med.name;
+              
+              // Speak alarm continuously every 10 seconds
+              const msg = new SpeechSynthesisUtterance(`Halo Bos, ini waktunya Anda meminum obat ${med.name}. Segera ambil obat Anda.`);
+              msg.lang = 'id-ID';
+              window.speechSynthesis.speak(msg);
+              
+              window.alarmInterval = setInterval(() => {
+                  window.speechSynthesis.speak(msg);
+              }, 10000);
+              break; // Trigger one alarm at a time
+          }
+      }
+  }
+
+  function stopAlarm() {
+      alarmActive = false;
+      document.getElementById("alarm-overlay").style.display = "none";
+      clearInterval(window.alarmInterval);
+      window.speechSynthesis.cancel();
+      const medName = document.getElementById("alarm-med-name").innerText;
+      
+      // Auto find med details to mark taken
+      const med = medsData.find(m => m.name === medName);
+      if (med) {
+          takeMedicine(med.name, med.time);
+      }
+  }
+
   // Init
   checkStatus();
   fetchBriefing();
+  fetchMeds();
   setInterval(checkStatus, 30000);
+  setInterval(fetchMeds, 60000); // refresh meds every minute
+  setInterval(checkMedsAlarm, 30000); // check alarm every 30s
   document.getElementById("msg-input").focus();
 </script>
 </body>
