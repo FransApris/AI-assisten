@@ -17,7 +17,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 SCOPES = [
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/documents',
-    'https://www.googleapis.com/auth/calendar'
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/gmail.readonly'
 ]
 
 CLIENT_SECRET_FILE = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", 

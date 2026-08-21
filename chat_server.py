@@ -76,7 +76,11 @@ Gunakan format ISO 8601 dengan zona waktu WIB (+07:00).
 Jika pengguna bertanya tentang jadwal mereka (contoh: "Apa jadwal saya hari ini?"), sisipkan:
 <CHECK_CALENDAR/>
 
-§5 BATASAN
+§5 PENGELOLAAN EMAIL
+Jika pengguna meminta untuk mengecek, membacakan, atau merangkum email/kotak masuk terbaru mereka, sisipkan format ini persis seperti ini:
+<CHECK_EMAIL/>
+
+§6 BATASAN
 • DILARANG diagnosis medis definitif — arahkan ke dokter
 • DILARANG nasihat hukum mengikat — arahkan ke pengacara
 • Jujur jika tidak tahu atau data tidak real-time
@@ -250,20 +254,42 @@ def chat():
 
         # RAG: cari konteks relevan dari Knowledge Base
         rag_context = rag_retrieve(user_msg)
-        if rag_context:
-            augmented_msg = (
-                f"{user_msg}\n\n"
-                f"---\n"
-                f"[Konteks dari Knowledge Base APRIS — gunakan jika relevan]:\n"
-                f"{rag_context}\n"
-                f"---"
-            )
-        else:
-            augmented_msg = user_msg
+        
+        # Web Scraper: cari URL di pesan user dan ekstrak isinya
+        url_context = ""
+        import sys
+        sys.path.append(str(Path(__file__).parent))
+        from features import web_scraper
+        urls = web_scraper.extract_urls(user_msg)
+        if urls:
+            scraped_texts = []
+            for url in urls:
+                scraped_texts.append(f"--- Konten dari {url} ---\n{web_scraper.scrape_url_text(url)}")
+            url_context = "\n\n".join(scraped_texts)
+
+        augmented_msg = user_msg
+        if rag_context or url_context:
+            augmented_msg += "\n\n"
+            if rag_context:
+                augmented_msg += f"---\n[Konteks dari Knowledge Base APRIS]:\n{rag_context}\n---\n\n"
+            if url_context:
+                augmented_msg += f"---\n[Konteks dari URL yang diberikan User]:\n{url_context}\n---\n"
 
         # Pesan baru user (sudah diaugmentasi dengan konteks RAG)
+        user_parts = [types.Part(text=augmented_msg)]
+        
+        # Cek apakah ada gambar yang dilampirkan
+        image_base64 = data.get("image_base64")
+        if image_base64:
+            import base64
+            image_bytes = base64.b64decode(image_base64)
+            mime_type = data.get("image_mime", "image/jpeg")
+            user_parts.append(
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+            )
+
         contents.append(
-            types.Content(role="user", parts=[types.Part(text=augmented_msg)])
+            types.Content(role="user", parts=user_parts)
         )
 
         # Aktifkan Google Search tools
@@ -297,6 +323,17 @@ def chat():
                     apris_reply += f"\n\n✅ *{res}*"
                 except Exception as e:
                     apris_reply += f"\n\n_Maaf, gagal membuat jadwal: {e}_"
+
+        # Intercept untuk fitur Gmail (Check)
+        if "<CHECK_EMAIL/>" in apris_reply:
+            try:
+                import sys
+                sys.path.append(str(Path(__file__).parent))
+                import google_gmail
+                email_data = google_gmail.get_recent_emails(5)
+                apris_reply = apris_reply.replace("<CHECK_EMAIL/>", f"\n\n{email_data}")
+            except Exception as e:
+                apris_reply = apris_reply.replace("<CHECK_EMAIL/>", f"\n\n_Gagal membaca email: {e}_")
 
         # Intercept untuk fitur Google Docs Writer
         if "<CREATE_DOC" in apris_reply:

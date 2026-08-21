@@ -294,10 +294,18 @@
 
   <!-- Input -->
   <div class="input-area">
+    <div id="image-preview-container" style="display:none; margin-bottom: 10px; position:relative; width: max-content;">
+      <img id="image-preview" style="max-height: 80px; border-radius: 8px; border: 1px solid var(--border);" src="" />
+      <button onclick="clearImage()" style="position:absolute; top:-5px; right:-5px; background:red; color:white; border:none; border-radius:50%; width:20px; height:20px; cursor:pointer; font-size:12px;">✖</button>
+    </div>
     <div class="input-wrap">
+      <input type="file" id="image-input" accept="image/*" style="display:none" onchange="previewImage(event)">
+      <button class="send-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="document.getElementById('image-input').click()" title="Lampirkan Gambar">
+        📎
+      </button>
       <textarea
         id="msg-input"
-        placeholder="Ketik pesan untuk APRIS..."
+        placeholder="Ketik pesan atau tanya tentang gambar..."
         rows="1"
         onkeydown="handleKey(event)"
         oninput="autoResize(this)"
@@ -353,7 +361,7 @@
   }
 
   // ── Append message bubble ─────────────────────────
-  function appendMsg(role, content, time) {
+  function appendMsg(role, content, time, isRawHtml = false) {
     const welcome = document.getElementById("welcome-screen");
     if (welcome) welcome.remove();
 
@@ -363,10 +371,18 @@
 
     const div = document.createElement("div");
     div.className = `msg ${role}`;
+    
+    let renderedContent = "";
+    if (isRawHtml) {
+        renderedContent = content;
+    } else {
+        renderedContent = isUser ? escapeHtml(content) : renderMarkdown(content);
+    }
+    
     div.innerHTML = `
       <div class="msg-avatar">${isUser ? "👤" : "🌟"}</div>
       <div class="msg-body">
-        <div class="msg-bubble">${isUser ? escapeHtml(content) : renderMarkdown(content)}</div>
+        <div class="msg-bubble">${renderedContent}</div>
         <span class="msg-time">${time}</span>
       </div>`;
     area.appendChild(div);
@@ -409,16 +425,53 @@
     return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   }
 
+  let currentImageBase64 = null;
+
+  function previewImage(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      currentImageBase64 = e.target.result; // data:image/png;base64,....
+      document.getElementById('image-preview').src = currentImageBase64;
+      document.getElementById('image-preview-container').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearImage() {
+    currentImageBase64 = null;
+    document.getElementById('image-input').value = "";
+    document.getElementById('image-preview-container').style.display = 'none';
+    document.getElementById('image-preview').src = "";
+  }
+
   // ── Send message ──────────────────────────────────
   async function sendMessage() {
     const input = document.getElementById("msg-input");
     const btn   = document.getElementById("send-btn");
     const text  = input.value.trim();
-    if (!text || isTyping) return;
+    if (!text && !currentImageBase64) return;
+    if (isTyping) return;
 
     const now = new Date().toLocaleTimeString("id-ID", {hour:"2-digit",minute:"2-digit"});
-    appendMsg("user", text, now);
+    let displayHtml = text;
+    if (currentImageBase64) {
+      displayHtml = `<img src="${currentImageBase64}" style="max-width:100%; border-radius:8px; margin-bottom:8px;"><br>` + escapeHtml(text);
+    }
+    
+    // We bypass escapeHtml for the user message bubble because we are injecting an img tag safely
+    appendMsg("user", displayHtml, now, true);
+    
     input.value = ""; input.style.height = "auto";
+    const payload = { message: text, session_id: sessionId };
+    
+    if (currentImageBase64) {
+      // Hilangkan header data:image/png;base64,
+      payload.image_base64 = currentImageBase64.split(',')[1];
+      payload.image_mime = currentImageBase64.split(';')[0].split(':')[1];
+      clearImage();
+    }
 
     isTyping = true; btn.disabled = true;
     showTyping();
@@ -427,7 +480,7 @@
       const res = await fetch(`${API}/chat`, {
         method : "POST",
         headers: {"Content-Type":"application/json"},
-        body   : JSON.stringify({ message: text, session_id: sessionId }),
+        body   : JSON.stringify(payload),
       });
       const data = await res.json();
       hideTyping();
