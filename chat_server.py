@@ -144,7 +144,7 @@ def rag_retrieve(query: str, top_k: int = None) -> str:
         print(f"[RAG] Retrieval error: {e}")
         return ""
 
-def generate_with_retry(client, model: str, contents, max_retries: int = 3):
+def generate_with_retry(client, model: str, contents, config=None, max_retries: int = 3):
     """
     Panggil generate_content dengan retry otomatis saat rate limit (429).
     Fallback: tunggu sesuai 'retry after' dari pesan error.
@@ -152,7 +152,7 @@ def generate_with_retry(client, model: str, contents, max_retries: int = 3):
     import time, re
     for attempt in range(max_retries):
         try:
-            return client.models.generate_content(model=model, contents=contents)
+            return client.models.generate_content(model=model, contents=contents, config=config)
         except Exception as e:
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
@@ -266,7 +266,12 @@ def chat():
             types.Content(role="user", parts=[types.Part(text=augmented_msg)])
         )
 
-        response = generate_with_retry(client, CHAT_MODEL, contents)
+        # Aktifkan Google Search tools
+        search_config = types.GenerateContentConfig(
+            tools=[{"google_search": {}}]
+        )
+
+        response = generate_with_retry(client, CHAT_MODEL, contents, config=search_config)
 
         apris_reply = response.text.strip()
         
