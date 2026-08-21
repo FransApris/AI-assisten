@@ -136,6 +136,29 @@ def rag_retrieve(query: str, top_k: int = None) -> str:
         print(f"[RAG] Retrieval error: {e}")
         return ""
 
+def generate_with_retry(client, model: str, contents, max_retries: int = 3):
+    """
+    Panggil generate_content dengan retry otomatis saat rate limit (429).
+    Fallback: tunggu sesuai 'retry after' dari pesan error.
+    """
+    import time, re
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(model=model, contents=contents)
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                # Coba baca waktu tunggu dari pesan error
+                match = re.search(r'retry in ([\d.]+)s', err)
+                wait  = float(match.group(1)) + 2 if match else (15 * (attempt + 1))
+                if attempt < max_retries - 1:
+                    print(f"[Rate Limit] Tunggu {wait:.0f}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                else:
+                    raise
+            else:
+                raise
+
 
 def get_or_create_session(session_id: str) -> list:
     if session_id not in _chat_sessions:
@@ -233,10 +256,7 @@ def chat():
             types.Content(role="user", parts=[types.Part(text=augmented_msg)])
         )
 
-        response = client.models.generate_content(
-            model    = CHAT_MODEL,
-            contents = contents,
-        )
+        response = generate_with_retry(client, CHAT_MODEL, contents)
 
         apris_reply = response.text.strip()
 
@@ -254,7 +274,18 @@ def chat():
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        err_str = str(e)
+        # Berikan pesan rate limit yang lebih ramah
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            import re
+            match = re.search(r'retry in ([\d.]+)s', err_str)
+            wait  = int(float(match.group(1))) + 1 if match else 60
+            return jsonify({
+                "error"     : f"Terlalu banyak permintaan. Harap tunggu {wait} detik.",
+                "retry_after": wait,
+                "code"      : 429,
+            }), 429
+        return jsonify({"error": err_str}), 500
 
 
 @app.route("/history")
