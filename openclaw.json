@@ -1,0 +1,8 @@
+{
+  "version": "1",
+  "name": "Asisten Virtual",
+  "description": "Asisten virtual berbasis Gemini AI",
+  "env": {
+    "LLM_PROVIDER": "gemini"
+  }
+}

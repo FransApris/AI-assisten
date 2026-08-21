@@ -1,0 +1,12 @@
+# APRIS Web Chat — Git Ignore
+.env
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+audio_output/
+reminders.db
+*.log
+.venv/
+venv/
+node_modules/

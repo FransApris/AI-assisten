@@ -1,0 +1,18 @@
+# APRIS Web Chat — Python Dependencies
+# Jalankan lokal: pip install -r requirements.txt
+
+# Google Gemini AI
+google-genai>=0.3.0
+
+# Web Framework
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Production WSGI server (Railway)
+gunicorn>=22.0.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Timezone data (Windows)
+tzdata>=2024.1
