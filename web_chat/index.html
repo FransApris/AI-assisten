@@ -301,12 +301,15 @@
       <button onclick="clearFile()" style="background:red; color:white; border:none; border-radius:50%; width:20px; height:20px; cursor:pointer; font-size:12px; display:flex; align-items:center; justify-content:center;">✖</button>
     </div>
     <div class="input-wrap">
-      <input type="file" id="file-input" accept="image/*, application/pdf, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, text/plain" style="display:none" onchange="previewFile(event)">
-      <button class="send-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="document.getElementById('file-input').click()" title="Lampirkan Gambar atau Dokumen">
+      <input type="file" id="file-input" accept="image/*, audio/*, application/pdf, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, text/plain" style="display:none" onchange="previewFile(event)">
+      <button class="send-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="document.getElementById('file-input').click()" title="Lampirkan Gambar, Dokumen, atau Audio">
         📎
       </button>
       <button class="send-btn" id="mic-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="toggleVoiceInput()" title="Bicara (Voice Input)">
         🎤
+      </button>
+      <button class="send-btn" id="live-meeting-btn" style="background:var(--bg-card); color:var(--text-2); border:1px solid var(--border);" onclick="toggleLiveMeeting()" title="Live Meeting (Mendengar Rapat)">
+        🎙️
       </button>
       <textarea
         id="msg-input"
@@ -460,6 +463,11 @@
       } else {
         document.getElementById('image-preview').style.display = 'none';
         document.getElementById('file-icon').style.display = 'inline-block';
+        if (currentFileMime.startsWith("audio/")) {
+            document.getElementById('file-icon').textContent = "🎵";
+        } else {
+            document.getElementById('file-icon').textContent = "📄";
+        }
       }
     };
     reader.readAsDataURL(file);
@@ -487,6 +495,8 @@
     if (currentFileBase64) {
       if (currentFileMime.startsWith("image/")) {
         displayHtml = `<img src="${currentFileBase64}" style="max-width:100%; border-radius:8px; margin-bottom:8px;"><br>` + escapeHtml(text);
+      } else if (currentFileMime.startsWith("audio/")) {
+        displayHtml = `<div style="background:var(--bg-card); padding:8px; border-radius:4px; margin-bottom:8px;">🎵 <b>${currentFileName}</b></div>` + escapeHtml(text);
       } else {
         displayHtml = `<div style="background:var(--bg-card); padding:8px; border-radius:4px; margin-bottom:8px;">📄 <b>${currentFileName}</b></div>` + escapeHtml(text);
       }
@@ -636,11 +646,95 @@
       showToast("Browser Anda tidak mendukung fitur mikrofon (Speech Recognition).");
       return;
     }
+    if (isLiveMeetingActive) {
+        showToast("Harap matikan Live Meeting terlebih dahulu.");
+        return;
+    }
     try {
       recognition.start();
     } catch(e) {
       recognition.stop();
     }
+  }
+
+  // ── Live Meeting Mode ─────────────────────────────
+  let isLiveMeetingActive = false;
+  let liveMeetingTranscript = "";
+  let liveMeetingRecognition = null;
+
+  if ('webkitSpeechRecognition' in window) {
+      liveMeetingRecognition = new webkitSpeechRecognition();
+      liveMeetingRecognition.continuous = true;
+      liveMeetingRecognition.interimResults = true;
+      liveMeetingRecognition.lang = 'id-ID';
+
+      liveMeetingRecognition.onstart = function() {
+          const btn = document.getElementById("live-meeting-btn");
+          btn.style.background = "#ef4444";
+          btn.style.color = "white";
+          btn.innerHTML = "⏹️"; // Stop icon
+          document.getElementById("msg-input").placeholder = "Merekam Live Meeting (Notulensi)...";
+      };
+
+      liveMeetingRecognition.onresult = function(event) {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+              if (event.results[i].isFinal) {
+                  liveMeetingTranscript += event.results[i][0].transcript + " ";
+              } else {
+                  interim += event.results[i][0].transcript;
+              }
+          }
+          document.getElementById("msg-input").value = liveMeetingTranscript + interim;
+      };
+
+      liveMeetingRecognition.onerror = function(event) {
+          console.error("Live meeting error", event.error);
+          if (isLiveMeetingActive) {
+              // try to restart if it's just a network error
+              setTimeout(() => { if (isLiveMeetingActive) liveMeetingRecognition.start(); }, 1000);
+          }
+      };
+
+      liveMeetingRecognition.onend = function() {
+          // Auto restart if still active (to bypass chrome's max duration limit)
+          if (isLiveMeetingActive) {
+              try { liveMeetingRecognition.start(); } catch(e){}
+          }
+      };
+  }
+
+  function toggleLiveMeeting() {
+      if (!liveMeetingRecognition) {
+          showToast("Browser Anda tidak mendukung fitur ini.");
+          return;
+      }
+      const btn = document.getElementById("live-meeting-btn");
+      const input = document.getElementById("msg-input");
+      
+      if (!isLiveMeetingActive) {
+          // Start Live Meeting
+          isLiveMeetingActive = true;
+          liveMeetingTranscript = "";
+          input.value = "";
+          try { liveMeetingRecognition.start(); } catch(e){}
+      } else {
+          // Stop Live Meeting
+          isLiveMeetingActive = false;
+          liveMeetingRecognition.stop();
+          btn.style.background = "var(--bg-card)";
+          btn.style.color = "var(--text-2)";
+          btn.innerHTML = "🎙️";
+          
+          if (liveMeetingTranscript.trim()) {
+              input.value = "Tolong buatkan notulen rapat resmi yang terstruktur (Agenda, Keputusan, Tindak Lanjut) berdasarkan transkrip berikut:\n\n" + liveMeetingTranscript;
+              sendMessage(); // Otomatis kirim untuk dirangkum
+          } else {
+              input.placeholder = "Ketik pesan atau bicara...";
+              input.value = "";
+          }
+          liveMeetingTranscript = "";
+      }
   }
 
   function toggleVoiceOutput() {

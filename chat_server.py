@@ -316,7 +316,7 @@ def chat():
             mime_type = data.get("file_mime", "application/octet-stream")
             file_name = data.get("file_name", "document")
 
-            if mime_type.startswith("image/"):
+            if mime_type.startswith("image/") or mime_type.startswith("audio/"):
                 user_parts.append(
                     types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
                 )
