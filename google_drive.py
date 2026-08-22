@@ -18,7 +18,8 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/documents',
     'https://www.googleapis.com/auth/calendar',
-    'https://www.googleapis.com/auth/gmail.readonly'
+    'https://www.googleapis.com/auth/gmail.modify',  # Baca, kirim, balas, tandai, label
+    'https://www.googleapis.com/auth/tasks',
 ]
 
 CLIENT_SECRET_FILE = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", 
@@ -26,24 +27,46 @@ CLIENT_SECRET_FILE = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET",
 TOKEN_FILE = str(Path(__file__).parent / "token.json")
 
 def get_credentials():
-    """Autentikasi menggunakan OAuth2 dan kembalikan credentials."""
+    """
+    Autentikasi menggunakan OAuth2 dan kembalikan credentials.
+    - Jika token.json ada dan valid → langsung pakai (tanpa login)
+    - Jika token expired → refresh otomatis (tanpa login)
+    - Jika refresh gagal (misal token dicabut) → buka browser untuk login ulang
+    """
     creds = None
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                # Coba refresh token secara otomatis (tidak perlu buka browser)
+                creds.refresh(Request())
+                print("[OAuth] Token di-refresh otomatis ✅")
+            except Exception as e:
+                # Jika refresh gagal (token dicabut/expired total), hapus dan login ulang
+                print(f"[OAuth] Refresh gagal: {e}. Memulai login ulang...")
+                os.remove(TOKEN_FILE)
+                creds = None
+
+        if not creds or not creds.valid:
             if not os.path.exists(CLIENT_SECRET_FILE):
                 raise FileNotFoundError(f"File kredensial OAuth tidak ditemukan: {CLIENT_SECRET_FILE}")
             flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, SCOPES)
-            creds = flow.run_local_server(port=8080, open_browser=False)
-            
-        # Simpan credentials untuk penggunaan berikutnya
+            creds = flow.run_local_server(
+                port=8080,
+                open_browser=True,
+                access_type='offline',
+                # 'prompt=consent' hanya diperlukan pertama kali untuk mendapatkan refresh_token.
+                # Setelah app In Production, hapus baris ini agar tidak minta consent berulang.
+                prompt='consent'
+            )
+            print("[OAuth] Login berhasil, token baru disimpan ✅")
+
+        # Simpan credentials yang sudah diperbarui
         with open(TOKEN_FILE, 'w') as token:
             token.write(creds.to_json())
-            
+
     return creds
 
 def get_drive_service():

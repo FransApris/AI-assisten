@@ -710,14 +710,89 @@ def chat():
                 except Exception as e:
                     apris_reply += f"\n\n_Maaf, gagal membuat jadwal: {e}_"
 
-        # Intercept untuk fitur Gmail (Check)
-        if "<CHECK_EMAIL/>" in apris_reply:
+        # ================================================================
+        # INTERCEPTOR EMAIL — 7 Fitur Lengkap
+        # ================================================================
+        import re as _re
+
+        # 1. Baca email terbaru (UNREAD)
+        if "<CHECK_EMAIL" in apris_reply:
             try:
                 import google_gmail
                 email_data = google_gmail.get_recent_emails(5)
-                apris_reply = apris_reply.replace("<CHECK_EMAIL/>", f"\n\n{email_data}")
+                apris_reply = _re.sub(r'<CHECK_EMAIL\s*/?>', f"\n\n{email_data}", apris_reply).strip()
             except Exception as e:
-                apris_reply = apris_reply.replace("<CHECK_EMAIL/>", f"\n\n_Gagal membaca email: {e}_")
+                apris_reply = _re.sub(r'<CHECK_EMAIL\s*/?>', f"\n\n_Gagal membaca email: {e}_", apris_reply).strip()
+
+        # 2. Rangkum inbox
+        if "<SUMMARIZE_INBOX" in apris_reply:
+            try:
+                import google_gmail
+                summary = google_gmail.summarize_inbox(10)
+                apris_reply = _re.sub(r'<SUMMARIZE_INBOX\s*/?>', f"\n\n{summary}", apris_reply).strip()
+            except Exception as e:
+                apris_reply = _re.sub(r'<SUMMARIZE_INBOX\s*/?>', f"\n\n_Gagal merangkum inbox: {e}_", apris_reply).strip()
+
+        # 3. Cari email
+        if "<SEARCH_EMAIL" in apris_reply:
+            m = _re.search(r'<SEARCH_EMAIL\s+query="([^"]+)"\s*/?>', apris_reply)
+            if m:
+                q = m.group(1).strip()
+                apris_reply = _re.sub(r'<SEARCH_EMAIL[^>]*/>', '', apris_reply).strip()
+                try:
+                    import google_gmail
+                    result = google_gmail.search_emails(q)
+                    apris_reply += f"\n\n🔍 *Hasil Pencarian Email:*\n{result}"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal mencari email: {e}_"
+
+        # 4. Kirim email baru
+        if "<SEND_EMAIL" in apris_reply:
+            m = _re.search(r'<SEND_EMAIL\s+to="([^"]+)"\s+subject="([^"]+)"\s+body="([^"]+)"\s*/?>', apris_reply, _re.DOTALL)
+            if m:
+                to_addr, subj, body_txt = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+                apris_reply = _re.sub(r'<SEND_EMAIL[^>]*/>', '', apris_reply).strip()
+                try:
+                    import google_gmail
+                    result = google_gmail.send_email(to_addr, subj, body_txt)
+                    apris_reply += f"\n\n✉️ *{result}*"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal mengirim email: {e}_"
+
+        # 5. Balas email
+        if "<REPLY_EMAIL" in apris_reply:
+            m = _re.search(r'<REPLY_EMAIL\s+id="([^"]+)"\s+body="([^"]+)"\s*/?>', apris_reply, _re.DOTALL)
+            if m:
+                msg_id, reply_body = m.group(1).strip(), m.group(2).strip()
+                apris_reply = _re.sub(r'<REPLY_EMAIL[^>]*/>', '', apris_reply).strip()
+                try:
+                    import google_gmail
+                    result = google_gmail.reply_email(msg_id, reply_body)
+                    apris_reply += f"\n\n↩️ *{result}*"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal membalas email: {e}_"
+
+        # 6. Tandai satu email sebagai dibaca
+        if "<MARK_READ" in apris_reply:
+            m = _re.search(r'<MARK_READ\s+id="([^"]+)"\s*/?>', apris_reply)
+            if m:
+                msg_id = m.group(1).strip()
+                apris_reply = _re.sub(r'<MARK_READ[^>]*/>', '', apris_reply).strip()
+                try:
+                    import google_gmail
+                    result = google_gmail.mark_as_read(msg_id)
+                    apris_reply += f"\n\n✅ *{result}*"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal menandai email: {e}_"
+
+        # 7. Tandai semua email sebagai dibaca
+        if "<MARK_ALL_READ" in apris_reply:
+            try:
+                import google_gmail
+                result = google_gmail.mark_all_inbox_read()
+                apris_reply = _re.sub(r'<MARK_ALL_READ\s*/?>', f"\n\n✅ *{result}*", apris_reply).strip()
+            except Exception as e:
+                apris_reply = _re.sub(r'<MARK_ALL_READ\s*/?>', f"\n\n_Gagal: {e}_", apris_reply).strip()
 
         # Intercept untuk fitur Weather
         if "<CHECK_WEATHER" in apris_reply:
@@ -788,6 +863,37 @@ def chat():
                     apris_reply += f"\n\n💊 *{res}*"
                 except Exception as e:
                     apris_reply += f"\n\n_Gagal menambahkan jadwal obat: {e}_"
+
+        # Intercept untuk Peta: Cari Tempat (OSM Nominatim)
+        if "<SEARCH_PLACES" in apris_reply:
+            import re
+            match = re.search(r'<SEARCH_PLACES\s+query="([^"]+)"\s*/?>', apris_reply)
+            if match:
+                q = match.group(1).strip()
+                apris_reply = re.sub(r'<SEARCH_PLACES[^>]*/>', '', apris_reply).strip()
+                apris_reply = re.sub(r'<SEARCH_PLACES[^>]*>', '', apris_reply).strip()  # non-self-closing fallback
+                try:
+                    from features import location
+                    res = location.search_places(q)
+                    apris_reply += f"\n\n\U0001f5fa\ufe0f *Informasi Lokasi:*\n{res}"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal mencari lokasi: {e}_"
+
+        # Intercept untuk Peta: Hitung Rute (OSRM)
+        if "<GET_ROUTE" in apris_reply:
+            import re
+            match = re.search(r'<GET_ROUTE\s+origin="([^"]+)"\s+destination="([^"]+)"\s*/?>', apris_reply)
+            if match:
+                ori = match.group(1).strip()
+                dest = match.group(2).strip()
+                apris_reply = re.sub(r'<GET_ROUTE[^>]*/>', '', apris_reply).strip()
+                apris_reply = re.sub(r'<GET_ROUTE[^>]*>', '', apris_reply).strip()  # non-self-closing fallback
+                try:
+                    from features import location
+                    res = location.get_route(ori, dest)
+                    apris_reply += f"\n\n\U0001f697 *Panduan Rute:*\n{res}"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal menghitung rute: {e}_"
 
 
         # Intercept untuk fitur Google Docs Writer

@@ -5,8 +5,15 @@ Menghasilkan ringkasan pagi berisi cuaca, kalender, dan status obat.
 Dijalankan via APScheduler setiap hari jam 07:00 WIB.
 """
 import os
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Pastikan root project ada di sys.path agar google_gmail bisa diimpor
+# bahkan saat modul ini dieksekusi oleh APScheduler sebagai background job.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 try:
     from zoneinfo import ZoneInfo
@@ -34,8 +41,6 @@ def generate_brief(city: str = "Jakarta") -> str:
 
     # --- Cuaca ---
     try:
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent))
         from features import weather
         w = weather.get_weather_by_city(city)
         lines.append(f"🌤️ *Cuaca {city}:*\n{w}")
@@ -72,6 +77,32 @@ def generate_brief(city: str = "Jakarta") -> str:
     brief = "\n".join(lines)
     _brief_cache["content"]      = brief
     _brief_cache["generated_at"] = datetime.now(TZ).isoformat()
+
+    # --- Autonomous Action: Kirim ke Email pengguna ---
+    try:
+        user_emails_raw = os.getenv("USER_EMAIL", "").strip()
+        if not user_emails_raw or user_emails_raw == "isi_dengan_email_anda@gmail.com":
+            print("[DailyBrief] USER_EMAIL belum dikonfigurasi di .env. Lewati pengiriman email.", flush=True)
+        else:
+            import google_gmail
+            clean_body = brief.replace("*", "").replace("_", "")
+            subject    = f"\u2600\ufe0f Laporan Harian APRIS - {now_str}"
+
+            # Dukung banyak email: pisahkan dengan koma
+            recipient_list = [
+                addr.strip() for addr in user_emails_raw.split(",")
+                if addr.strip() and "@" in addr.strip() and "." in addr.strip().split("@")[-1]
+            ]
+
+            if not recipient_list:
+                print(f"[DailyBrief] Tidak ada alamat email valid ditemukan di USER_EMAIL: '{user_emails_raw}'", flush=True)
+            else:
+                for addr in recipient_list:
+                    result = google_gmail.send_email(to=addr, subject=subject, body=clean_body)
+                    print(f"[DailyBrief] {result}", flush=True)
+    except Exception as e:
+        print(f"[DailyBrief] Gagal mengirim email: {e}", flush=True)
+
     return brief
 
 
