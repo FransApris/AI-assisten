@@ -42,6 +42,27 @@ EMAIL_ALIAS = {
 # Token lama (single-account) untuk backward-compatibility
 TOKEN_FILE = str(Path(__file__).parent / "token.json")
 
+# ---------------------------------------------------------------------------
+# Cloud Deployment Support (Railway/Heroku)
+# ---------------------------------------------------------------------------
+# Jika ada env var berisi JSON, tulis ke file agar bisa dibaca oleh library
+env_to_file = {
+    "GOOGLE_CLIENT_SECRET_JSON": CLIENT_SECRET_FILE,
+    "GOOGLE_TOKEN_APRIS_JSON": ACCOUNTS["apris"],
+    "GOOGLE_TOKEN_FAD2BETH_JSON": ACCOUNTS["fad2beth"]
+}
+
+for env_var, file_path in env_to_file.items():
+    env_content = os.getenv(env_var)
+    if env_content and not os.path.exists(file_path):
+        try:
+            with open(file_path, "w") as f:
+                f.write(env_content)
+            print(f"[Init] {os.path.basename(file_path)} dibuat dari environment variable.")
+        except Exception as e:
+            print(f"[Init] Gagal membuat {os.path.basename(file_path)} dari env var: {e}")
+
+
 
 def _resolve_account(account: str) -> str:
     """Resolve alias atau email address menjadi key di ACCOUNTS."""
