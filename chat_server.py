@@ -11,8 +11,10 @@ Endpoints:
 """
 
 import os
+import sys
 import json
 import uuid
+import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -22,6 +24,9 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
+# Pastikan folder ini ada di sys.path agar import features/* selalu berhasil
+sys.path.insert(0, str(Path(__file__).parent))
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -30,6 +35,9 @@ CHAT_MODEL        = os.getenv("GEMINI_CHAT_MODEL", "models/gemini-2.5-flash")
 EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
 # Railway set PORT otomatis; fallback ke 5052 untuk lokal
 SERVER_PORT       = int(os.getenv("PORT", os.getenv("CHAT_SERVER_PORT", 5052)))
+# TTL sesi (jam) dan batas ukuran file upload (byte)
+SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", 24))
+MAX_FILE_BYTES    = int(os.getenv("MAX_FILE_BYTES", 10 * 1024 * 1024))  # default 10 MB
 
 # RAG Knowledge Base config
 _RAG_DEFAULT  = str(Path(__file__).resolve().parent.parent / "rag-knowledge" / "vectorstore")
@@ -109,8 +117,9 @@ Zona Waktu: WIB (Asia/Jakarta) | Bahasa: Indonesia | Versi: APRIS v3.0"""
 # Gemini client & session history
 # ---------------------------------------------------------------------------
 _genai_client  = None
-_chat_sessions = {}   # session_id → list of messages
-_chroma_col    = None  # ChromaDB collection (lazy load)
+_chroma_col    = None           # ChromaDB collection (lazy load)
+_chat_sessions = {}             # session_id → {"messages": list, "last_access": datetime}
+_sessions_lock = threading.Lock()
 
 
 def get_client():
@@ -190,10 +199,29 @@ def generate_with_retry(client, model: str, contents, config=None, max_retries: 
                 raise
 
 
+def _cleanup_sessions():
+    """Hapus sesi yang tidak aktif lebih dari SESSION_TTL_HOURS jam."""
+    cutoff = datetime.now(TZ) - timedelta(hours=SESSION_TTL_HOURS)
+    with _sessions_lock:
+        expired = [
+            sid for sid, data in _chat_sessions.items()
+            if data["last_access"] < cutoff
+        ]
+        for sid in expired:
+            del _chat_sessions[sid]
+    if expired:
+        print(f"[Session] Dibersihkan {len(expired)} sesi expired.", flush=True)
+
+
 def get_or_create_session(session_id: str) -> list:
-    if session_id not in _chat_sessions:
-        _chat_sessions[session_id] = []
-    return _chat_sessions[session_id]
+    _cleanup_sessions()
+    now = datetime.now(TZ)
+    with _sessions_lock:
+        if session_id not in _chat_sessions:
+            _chat_sessions[session_id] = {"messages": [], "last_access": now}
+        else:
+            _chat_sessions[session_id]["last_access"] = now
+        return _chat_sessions[session_id]["messages"]
 
 
 # ---------------------------------------------------------------------------
@@ -317,8 +345,6 @@ def chat():
         
         # Web Scraper: cari URL di pesan user dan ekstrak isinya
         url_context = ""
-        import sys
-        sys.path.append(str(Path(__file__).parent))
         from features import web_scraper
         urls = web_scraper.extract_urls(user_msg)
         if urls:
@@ -359,7 +385,12 @@ def chat():
         file_base64 = data.get("file_base64")
         if file_base64:
             import base64
+            # Validasi ukuran sebelum decode (base64 ≈ 1.33× ukuran asli)
+            if len(file_base64) > MAX_FILE_BYTES * 1.4:
+                return jsonify({"error": f"File terlalu besar. Batas maksimal {MAX_FILE_BYTES // (1024*1024)} MB."}), 413
             file_bytes = base64.b64decode(file_base64)
+            if len(file_bytes) > MAX_FILE_BYTES:
+                return jsonify({"error": f"File terlalu besar. Batas maksimal {MAX_FILE_BYTES // (1024*1024)} MB."}), 413
             mime_type = data.get("file_mime", "application/octet-stream")
             file_name = data.get("file_name", "document")
 
@@ -430,8 +461,6 @@ def chat():
         # Intercept untuk fitur Gmail (Check)
         if "<CHECK_EMAIL/>" in apris_reply:
             try:
-                import sys
-                sys.path.append(str(Path(__file__).parent))
                 import google_gmail
                 email_data = google_gmail.get_recent_emails(5)
                 apris_reply = apris_reply.replace("<CHECK_EMAIL/>", f"\n\n{email_data}")
@@ -441,17 +470,16 @@ def chat():
         # Intercept untuk fitur Weather
         if "<CHECK_WEATHER" in apris_reply:
             import re
-            match = re.search(r'<CHECK_WEATHER location="([^"]+)"\s*/>', apris_reply)
+            # Handle baik />  maupun > (tanpa self-closing slash)
+            match = re.search(r'<CHECK_WEATHER location="([^"]+)"\s*/?>', apris_reply)
             if match:
                 loc = match.group(1)
                 try:
-                    import sys
-                    sys.path.append(str(Path(__file__).parent))
                     from features import weather
                     w_data = weather.get_weather_by_city(loc)
-                    apris_reply = re.sub(r'<CHECK_WEATHER.*?\/>', f"\n\n*{w_data}*", apris_reply).strip()
+                    apris_reply = re.sub(r'<CHECK_WEATHER[^>]*/?>', f"\n\n*{w_data}*", apris_reply).strip()
                 except Exception as e:
-                    apris_reply = re.sub(r'<CHECK_WEATHER.*?\/>', f"\n\n_Gagal mengecek cuaca: {e}_", apris_reply).strip()
+                    apris_reply = re.sub(r'<CHECK_WEATHER[^>]*/?>', f"\n\n_Gagal mengecek cuaca: {e}_", apris_reply).strip()
 
         # Intercept untuk fitur Notion
         if "<NOTION_WRITE" in apris_reply:
@@ -462,8 +490,6 @@ def chat():
                 content = match.group(2).strip()
                 apris_reply = re.sub(r'<NOTION_WRITE.*?</NOTION_WRITE>', '', apris_reply, flags=re.DOTALL).strip()
                 try:
-                    import sys
-                    sys.path.append(str(Path(__file__).parent))
                     from features import notion_api
                     n_res = notion_api.write_to_notion(title, content)
                     apris_reply += f"\n\n✅ *{n_res}*"
@@ -474,41 +500,37 @@ def chat():
         if "<REMEMBER" in apris_reply or "<FORGET" in apris_reply:
             import re
             try:
-                import sys
-                sys.path.append(str(Path(__file__).parent))
                 from features import memory
-                
-                # Proses Remember
-                rem_match = re.search(r'<REMEMBER fact="([^"]+)"\s*/>', apris_reply)
-                if rem_match:
-                    fact = rem_match.group(1).strip()
-                    apris_reply = re.sub(r'<REMEMBER.*?\/>', '', apris_reply).strip()
-                    res = memory.add_memory(fact)
-                    apris_reply += f"\n\n🧠 *{res}*"
-                    
-                # Proses Forget
-                for_match = re.search(r'<FORGET fact="([^"]+)"\s*/>', apris_reply)
-                if for_match:
-                    fact = for_match.group(1).strip()
-                    apris_reply = re.sub(r'<FORGET.*?\/>', '', apris_reply).strip()
-                    res = memory.remove_memory(fact)
-                    apris_reply += f"\n\n🧠 *{res}*"
-                    
-            except Exception as e:
-                pass # Abaikan jika gagal
+
+                # Proses SEMUA tag <REMEMBER> (bisa lebih dari satu)
+                rem_matches = re.findall(r'<REMEMBER fact="([^"]+)"\s*/?>', apris_reply)
+                if rem_matches:
+                    apris_reply = re.sub(r'<REMEMBER[^>]*/?>', '', apris_reply).strip()
+                    for fact in rem_matches:
+                        res = memory.add_memory(fact.strip())
+                        apris_reply += f"\n\n🧠 *{res}*"
+
+                # Proses SEMUA tag <FORGET> (bisa lebih dari satu)
+                for_matches = re.findall(r'<FORGET fact="([^"]+)"\s*/?>', apris_reply)
+                if for_matches:
+                    apris_reply = re.sub(r'<FORGET[^>]*/?>', '', apris_reply).strip()
+                    for fact in for_matches:
+                        res = memory.remove_memory(fact.strip())
+                        apris_reply += f"\n\n🧠 *{res}*"
+
+            except Exception:
+                pass  # Abaikan jika gagal
 
         # Intercept untuk fitur Pengingat Obat
         if "<ADD_MEDICINE" in apris_reply:
             import re
-            match = re.search(r'<ADD_MEDICINE name="([^"]+)" time="([^"]+)" reason="([^"]+)"\s*/>', apris_reply)
+            match = re.search(r'<ADD_MEDICINE name="([^"]+)" time="([^"]+)" reason="([^"]+)"\s*/?>', apris_reply)
             if match:
                 m_name = match.group(1).strip()
                 m_time = match.group(2).strip()
                 m_reason = match.group(3).strip()
-                apris_reply = re.sub(r'<ADD_MEDICINE.*?\/>', '', apris_reply).strip()
+                apris_reply = re.sub(r'<ADD_MEDICINE[^>]*/>', '', apris_reply).strip()
                 try:
-                    import sys
-                    sys.path.append(str(Path(__file__).parent))
                     from features import medical
                     res = medical.add_medicine(m_name, m_time, m_reason)
                     apris_reply += f"\n\n💊 *{res}*"
@@ -571,10 +593,13 @@ def chat():
 @app.route("/history")
 def history():
     session_id = request.args.get("session_id", "default")
+    with _sessions_lock:
+        data = _chat_sessions.get(session_id, {})
+        msgs = data.get("messages", []) if isinstance(data, dict) else []
     return jsonify({
         "session_id": session_id,
-        "messages"  : _chat_sessions.get(session_id, []),
-        "count"     : len(_chat_sessions.get(session_id, [])),
+        "messages"  : msgs,
+        "count"     : len(msgs),
     })
 
 
@@ -582,7 +607,8 @@ def history():
 def clear():
     data       = request.get_json(silent=True) or {}
     session_id = data.get("session_id", "default")
-    _chat_sessions[session_id] = []
+    with _sessions_lock:
+        _chat_sessions[session_id] = {"messages": [], "last_access": datetime.now(TZ)}
     return jsonify({"status": "cleared", "session_id": session_id})
 
 
