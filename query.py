@@ -14,7 +14,8 @@ import sys
 import argparse
 
 import chromadb
-import google.generativeai as genai
+from google import genai
+from google.genai import types as gtypes
 from dotenv import load_dotenv
 from colorama import init, Fore, Style
 
@@ -23,13 +24,14 @@ init(autoreset=True)
 load_dotenv()
 
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY")
-CHAT_MODEL        = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
-EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
+CHAT_MODEL        = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 CHROMA_DB_PATH    = os.getenv("CHROMA_DB_PATH", "./vectorstore")
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION_NAME", "apris_knowledge")
 TOP_K             = int(os.getenv("TOP_K_RESULTS", 5))
 
-genai.configure(api_key=GEMINI_API_KEY)
+# Lazy Gemini client (SDK baru)
+_genai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
@@ -58,12 +60,12 @@ def get_chroma_collection():
 
 def get_query_embedding(text: str) -> list[float]:
     """Buat embedding untuk query."""
-    result = genai.embed_content(
+    result = _genai_client.models.embed_content(
         model=EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_query"
+        contents=text,
+        config=gtypes.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
     )
-    return result["embedding"]
+    return result.embeddings[0].values
 
 
 def search_documents(query: str, collection, top_k: int = TOP_K) -> list[dict]:
@@ -145,8 +147,10 @@ def ask(query: str, collection) -> str:
     # Generate jawaban
     print(f"\n{Fore.YELLOW}  💬 Membuat jawaban...\n")
     prompt = build_prompt(query, chunks)
-    model  = genai.GenerativeModel(CHAT_MODEL)
-    resp   = model.generate_content(prompt)
+    resp = _genai_client.models.generate_content(
+        model=CHAT_MODEL,
+        contents=prompt
+    )
     return resp.text
 
 

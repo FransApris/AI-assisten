@@ -95,6 +95,7 @@ _ingest_progress = {
     "started_at":    None,
     "finished_at":   None,
 }
+_progress_lock = threading.Lock()  # Proteksi thread-safe untuk _ingest_progress
 
 app = Flask(__name__)
 CORS(app)
@@ -344,39 +345,42 @@ def trigger_ingest():
     ingest_status = {"running": True, "result": None, "error": None}
 
     def run_ingest():
-        global _ingest_progress
-        _ingest_progress.update({
-            "running": True, "stage": "extracting",
-            "current_file": file or "semua PDF",
-            "current_page": 0, "total_pages": 0,
-            "chunks_saved": 0, "error": None,
-            "message": "Memulai proses ingest...",
-            "started_at": datetime.now().isoformat(),
-            "finished_at": None,
-        })
+        with _progress_lock:
+            _ingest_progress.update({
+                "running": True, "stage": "extracting",
+                "current_file": file or "semua PDF",
+                "current_page": 0, "total_pages": 0,
+                "chunks_saved": 0, "error": None,
+                "message": "Memulai proses ingest...",
+                "started_at": datetime.now().isoformat(),
+                "finished_at": None,
+            })
         try:
             import ingest as ingest_module
             # Inject progress callback ke ingest module
             ingest_module._progress = _ingest_progress
             from ingest import run_ingestion
             result = run_ingestion(target_file=file, reset=reset, force=force)
-            _ingest_progress.update({
-                "stage": "done",
-                "chunks_saved": result.get("total_chunks", 0),
-                "message": f"Selesai! {result.get('total_chunks', 0)} chunks disimpan.",
-                "finished_at": datetime.now().isoformat(),
-            })
+            with _progress_lock:
+                _ingest_progress.update({
+                    "stage": "done",
+                    "chunks_saved": result.get("total_chunks", 0),
+                    "message": f"Selesai! {result.get('total_chunks', 0)} chunks disimpan.",
+                    "finished_at": datetime.now().isoformat(),
+                })
             print(f"[INGEST] Selesai: {result}", flush=True)
         except Exception as e:
             import traceback
-            _ingest_progress.update({
-                "stage": "error", "error": str(e),
-                "message": f"Error: {e}",
-                "finished_at": datetime.now().isoformat(),
-            })
+            with _progress_lock:
+                _ingest_progress.update({
+                    "stage": "error", "error": str(e),
+                    "message": f"Error: {e}",
+                    "finished_at": datetime.now().isoformat(),
+                })
             print(f"[INGEST ERROR] {traceback.format_exc()}", flush=True)
         finally:
-            _ingest_progress["running"] = False
+            with _progress_lock:
+                _ingest_progress["running"] = False
 
     thread = threading.Thread(target=run_ingest, daemon=True)
     thread.start()
@@ -392,7 +396,9 @@ def trigger_ingest():
 @app.route("/ingest-progress", methods=["GET"])
 def ingest_progress():
     """Progress real-time dari proses ingest yang sedang berjalan."""
-    return jsonify(_ingest_progress)
+    with _progress_lock:
+        snapshot = dict(_ingest_progress)  # baca snapshot atomik
+    return jsonify(snapshot)
 
 
 @app.route("/debug-ingest", methods=["GET", "POST"])
