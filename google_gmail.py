@@ -12,16 +12,16 @@ Fitur:
 import base64
 from email.message import EmailMessage
 from googleapiclient.discovery import build
-from google_drive import get_credentials
+from google_drive import get_credentials, DEFAULT_ACCOUNT
 
 
 # ---------------------------------------------------------------------------
 # Helper Internal
 # ---------------------------------------------------------------------------
 
-def _get_service():
-    """Buat Gmail API service (dipanggil ulang tiap fungsi untuk thread-safety)."""
-    creds = get_credentials()
+def _get_service(account: str = DEFAULT_ACCOUNT):
+    """Buat Gmail API service untuk akun tertentu ('apris' / 'fad2beth' atau email lengkap)."""
+    creds = get_credentials(account)
     return build('gmail', 'v1', credentials=creds)
 
 
@@ -95,13 +95,16 @@ def _format_email(e: dict, index: int = None) -> str:
 # 1. Baca Email (UNREAD)
 # ---------------------------------------------------------------------------
 
-def get_recent_emails(limit: int = 5) -> str:
+def get_recent_emails(limit: int = 5, account: str = DEFAULT_ACCOUNT) -> str:
     """
     Mengambil email terbaru yang belum dibaca dari Inbox.
-    Returns teks berformat untuk ditampilkan di chat.
+
+    Args:
+        limit: Jumlah email yang diambil.
+        account: Alias akun ('apris' / 'fad2beth') atau email lengkap.
     """
     try:
-        service = _get_service()
+        service = _get_service(account)
         results = service.users().messages().list(
             userId='me', labelIds=['INBOX', 'UNREAD'], maxResults=limit
         ).execute()
@@ -126,15 +129,18 @@ def get_recent_emails(limit: int = 5) -> str:
 # 2. Cari Email
 # ---------------------------------------------------------------------------
 
-def search_emails(query: str, limit: int = 5) -> str:
+def search_emails(query: str, limit: int = 5, account: str = DEFAULT_ACCOUNT) -> str:
     """
     Mencari email berdasarkan query Gmail (dari, subjek, kata kunci, dll).
     Contoh query: 'from:budi subject:laporan after:2026/08/01'
+
+    Args:
+        account: Alias akun ('apris' / 'fad2beth') atau email lengkap.
     """
     if not query or not query.strip():
         return "Query pencarian email tidak boleh kosong."
     try:
-        service = _get_service()
+        service = _get_service(account)
         results = service.users().messages().list(
             userId='me', q=query.strip(), maxResults=limit
         ).execute()
@@ -160,13 +166,16 @@ def search_emails(query: str, limit: int = 5) -> str:
 # 3. Rangkum Inbox
 # ---------------------------------------------------------------------------
 
-def summarize_inbox(limit: int = 10) -> str:
+def summarize_inbox(limit: int = 10, account: str = DEFAULT_ACCOUNT) -> str:
     """
     Mengambil email terbaru yang belum dibaca, lalu mengembalikan
     data terstruktur (list of dict) agar bisa dirangkum oleh LLM.
+
+    Args:
+        account: Alias akun ('apris' / 'fad2beth') atau email lengkap.
     """
     try:
-        service = _get_service()
+        service = _get_service(account)
         results = service.users().messages().list(
             userId='me', labelIds=['INBOX', 'UNREAD'], maxResults=limit
         ).execute()
@@ -196,15 +205,18 @@ def summarize_inbox(limit: int = 10) -> str:
 # 4. Kirim Email
 # ---------------------------------------------------------------------------
 
-def send_email(to: str, subject: str, body: str) -> str:
+def send_email(to: str, subject: str, body: str, account: str = DEFAULT_ACCOUNT) -> str:
     """
     Mengirim email baru melalui Gmail API.
     'to' dapat berisi lebih dari satu alamat (pisah dengan koma).
+
+    Args:
+        account: Akun pengirim ('apris' / 'fad2beth') atau email lengkap.
     """
     if not to or not subject or not body:
         return "Gagal: 'to', 'subject', dan 'body' semuanya wajib diisi."
     try:
-        service = _get_service()
+        service = _get_service(account)
 
         message = EmailMessage()
         message.set_content(body)
@@ -225,15 +237,18 @@ def send_email(to: str, subject: str, body: str) -> str:
 # 5. Balas Email (Reply)
 # ---------------------------------------------------------------------------
 
-def reply_email(message_id: str, body: str) -> str:
+def reply_email(message_id: str, body: str, account: str = DEFAULT_ACCOUNT) -> str:
     """
     Membalas email berdasarkan Gmail Message ID (bukan Message-ID header).
     'message_id' adalah ID hex pendek yang terlihat di output get_recent_emails/search_emails.
+
+    Args:
+        account: Akun yang digunakan untuk membalas ('apris' / 'fad2beth').
     """
     if not message_id or not body:
         return "Gagal: 'message_id' dan 'body' balasan wajib diisi."
     try:
-        service = _get_service()
+        service = _get_service(account)
 
         # Ambil pesan asli untuk mendapatkan thread_id dan header
         orig = service.users().messages().get(
@@ -265,14 +280,17 @@ def reply_email(message_id: str, body: str) -> str:
 # 6. Tandai Sudah Dibaca
 # ---------------------------------------------------------------------------
 
-def mark_as_read(message_id: str) -> str:
+def mark_as_read(message_id: str, account: str = DEFAULT_ACCOUNT) -> str:
     """
     Menandai satu email sebagai sudah dibaca (hapus label UNREAD).
+
+    Args:
+        account: Alias akun ('apris' / 'fad2beth') atau email lengkap.
     """
     if not message_id:
         return "Gagal: 'message_id' wajib diisi."
     try:
-        service = _get_service()
+        service = _get_service(account)
         service.users().messages().modify(
             userId='me',
             id=message_id,
@@ -287,10 +305,15 @@ def mark_as_read(message_id: str) -> str:
 # 7. Tandai Semua Inbox sebagai Dibaca
 # ---------------------------------------------------------------------------
 
-def mark_all_inbox_read() -> str:
-    """Menandai semua email UNREAD di Inbox sebagai sudah dibaca (batch)."""
+def mark_all_inbox_read(account: str = DEFAULT_ACCOUNT) -> str:
+    """
+    Menandai semua email UNREAD di Inbox sebagai sudah dibaca (batch).
+
+    Args:
+        account: Alias akun ('apris' / 'fad2beth') atau email lengkap.
+    """
     try:
-        service = _get_service()
+        service = _get_service(account)
         results = service.users().messages().list(
             userId='me', labelIds=['INBOX', 'UNREAD'], maxResults=500
         ).execute()
