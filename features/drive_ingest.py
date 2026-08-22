@@ -194,7 +194,7 @@ def ingest_drive_files():
             except Exception as e:
                 print(f"\n  [ERROR] batch {i}: {e}")
                 
-        print(f" ✓ ({added} chunk)")
+        print(f" [OK] ({added} chunk)")
         log[fid] = fhash
         total_added += added
         
