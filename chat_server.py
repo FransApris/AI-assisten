@@ -38,6 +38,9 @@ SERVER_PORT       = int(os.getenv("PORT", os.getenv("CHAT_SERVER_PORT", 5052)))
 # TTL sesi (jam) dan batas ukuran file upload (byte)
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", 24))
 MAX_FILE_BYTES    = int(os.getenv("MAX_FILE_BYTES", 10 * 1024 * 1024))  # default 10 MB
+# Context window: ringkas history jika melebihi batas ini
+MAX_HISTORY_MSGS  = int(os.getenv("MAX_HISTORY_MSGS", 40))
+SUMMARY_KEEP_MSGS = int(os.getenv("SUMMARY_KEEP_MSGS", 10))  # pesan terbaru yang tetap ada
 
 # RAG Knowledge Base config
 _RAG_DEFAULT  = str(Path(__file__).resolve().parent.parent / "rag-knowledge" / "vectorstore")
@@ -106,7 +109,19 @@ Jika pengguna meminta Anda untuk melupakan sesuatu yang sudah Anda ingat, sisipk
 Jika pengguna menyebutkan bahwa mereka harus mengonsumsi obat tertentu secara rutin pada jam tertentu, jadwalkan pengingat menggunakan tag berikut:
 <ADD_MEDICINE name="NamaObat" time="HH:MM" reason="Alasan medis/Manfaat obat"/>
 
-§10 BATASAN
+§10 PENGELOLAAN TUGAS (GOOGLE TASKS)
+Jika pengguna meminta menambahkan tugas/to-do, gunakan:
+<ADD_TASK title="Judul tugas" due="YYYY-MM-DD" notes="Catatan opsional"/>
+Jika pengguna meminta daftar tugas:
+<LIST_TASKS/>
+Jika pengguna menyelesaikan tugas:
+<COMPLETE_TASK title="kata kunci judul tugas"/>
+
+§11 PENCARIAN KONTAK
+Jika pengguna meminta informasi kontak seseorang dari Google Contacts:
+<SEARCH_CONTACT name="Nama Orang"/>
+
+§12 BATASAN
 • DILARANG diagnosis medis definitif — arahkan ke dokter
 • DILARANG nasihat hukum mengikat — arahkan ke pengacara
 • Jujur jika tidak tahu atau data tidak real-time
@@ -120,6 +135,9 @@ _genai_client  = None
 _chroma_col    = None           # ChromaDB collection (lazy load)
 _chat_sessions = {}             # session_id → {"messages": list, "last_access": datetime}
 _sessions_lock = threading.Lock()
+_sse_clients   = []             # list of SSE queue untuk /events stream
+_sse_lock      = threading.Lock()
+_scheduler     = None           # APScheduler instance (lazy init)
 
 
 def get_client():
@@ -224,11 +242,136 @@ def get_or_create_session(session_id: str) -> list:
         return _chat_sessions[session_id]["messages"]
 
 
+def _summarize_history(history: list, client) -> list:
+    """
+    Jika history terlalu panjang, ringkas pesan-pesan lama agar tidak overflow token.
+    Kembalikan history baru yang lebih pendek.
+    """
+    if len(history) <= MAX_HISTORY_MSGS:
+        return history
+
+    # Ambil pesan lama untuk diringkas, sisakan SUMMARY_KEEP_MSGS terakhir
+    old_msgs   = history[:-SUMMARY_KEEP_MSGS]
+    recent_msgs = history[-SUMMARY_KEEP_MSGS:]
+
+    old_text = "\n".join(
+        f"{m['role'].upper()}: {m['content'][:300]}" for m in old_msgs
+    )
+    summary_prompt = (
+        f"Ringkas percakapan berikut dalam maksimal 5 poin penting "
+        f"(bahasa Indonesia, padat):\n\n{old_text}"
+    )
+    try:
+        from google.genai import types
+        resp = client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=summary_prompt
+        )
+        summary_text = resp.text.strip()
+        summary_msg  = {"role": "system", "content": f"[Ringkasan percakapan sebelumnya]:\n{summary_text}", "time": ""}
+        print(f"[ContextMgmt] History diringkas ({len(old_msgs)} → 1 summary)", flush=True)
+        return [summary_msg] + recent_msgs
+    except Exception as e:
+        print(f"[ContextMgmt] Gagal ringkas: {e}", flush=True)
+        # Fallback: buang pesan lama saja
+        return recent_msgs
+
+
+def _sse_push(event_type: str, message: str):
+    """Kirim event ke semua SSE client yang terhubung."""
+    import queue
+    payload = f"event: {event_type}\ndata: {json.dumps({'message': message})}\n\n"
+    with _sse_lock:
+        dead = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(payload)
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            _sse_clients.remove(q)
+
+
+def _get_scheduler():
+    """Lazy-init APScheduler. Jalankan sekali saat pertama kali diperlukan."""
+    global _scheduler
+    if _scheduler is not None:
+        return _scheduler
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.jobstores.sqlalchemy  import SQLAlchemyJobStore
+        from apscheduler.executors.pool        import ThreadPoolExecutor
+        import logging
+        logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
+        db_path    = Path(__file__).parent / "reminders.db"
+        _scheduler = BackgroundScheduler(
+            jobstores ={"default": SQLAlchemyJobStore(url=f"sqlite:///{db_path}")},
+            executors ={"default": ThreadPoolExecutor(5)},
+            job_defaults={"coalesce": True, "max_instances": 1},
+            timezone  = TZ,
+        )
+        _scheduler.start()
+        print("[Scheduler] APScheduler started", flush=True)
+    except ImportError:
+        print("[Scheduler] APScheduler tidak terinstall — fitur scheduler dinonaktifkan", flush=True)
+        _scheduler = None
+    return _scheduler
+
+
+def _init_schedulers():
+    """Inisialisasi semua scheduled jobs saat startup."""
+    sched = _get_scheduler()
+    if sched is None:
+        return
+
+    # 1. Daily Brief setiap 07:00 WIB
+    try:
+        from features.daily_brief import schedule_daily_brief
+        schedule_daily_brief(sched)
+    except Exception as e:
+        print(f"[Scheduler] Daily brief error: {e}")
+
+    # 2. Auto-ingest Google Drive setiap 6 jam
+    try:
+        from apscheduler.triggers.interval import IntervalTrigger
+        def _run_drive_ingest():
+            try:
+                from features import drive_ingest
+                drive_ingest.ingest_drive_files()
+            except Exception as e2:
+                print(f"[DriveIngest] Error: {e2}")
+        sched.add_job(
+            _run_drive_ingest,
+            trigger=IntervalTrigger(hours=6),
+            id="auto_drive_ingest",
+            replace_existing=True,
+            name="Auto Drive Ingest",
+        )
+        print("[Scheduler] Drive auto-ingest: setiap 6 jam", flush=True)
+    except Exception as e:
+        print(f"[Scheduler] Drive ingest error: {e}")
+
+    # 3. Proactive Agent (kalender & obat)
+    try:
+        from features import proactive
+        proactive.set_sse_push(_sse_push)
+        proactive.register_jobs(sched)
+    except Exception as e:
+        print(f"[Scheduler] Proactive error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Flask App
 # ---------------------------------------------------------------------------
 app = Flask(__name__, static_folder="web_chat", static_url_path="/static")
 CORS(app)
+
+# Inisialisasi scheduler jobs (background, non-blocking)
+try:
+    _init_schedulers()
+except Exception as _sched_err:
+    print(f"[Startup] Scheduler init error: {_sched_err}")
 
 
 @app.route("/")
@@ -237,24 +380,112 @@ def index():
 
 @app.route("/briefing")
 def briefing():
+    """Ambil daily briefing — dari cache jika sudah ada, generate jika belum."""
     try:
-        import google_calendar
-        import google_gmail
-        from features import weather
-        
-        cal = google_calendar.get_upcoming_events(3)
-        eml = google_gmail.get_recent_emails(3)
-        # Default cuaca ke Jakarta jika tidak tahu lokasi user
-        wth = weather.get_weather_by_city("Jakarta")
-        
-        brief = (
-            "☀️ **Selamat Pagi! Berikut adalah Briefing Harian Anda:**\n\n"
-            f"🌤️ **Cuaca Hari Ini:**\n{wth}\n\n"
-            f"📅 **Jadwal Terdekat:**\n{cal}\n\n"
-            f"📧 **Email Belum Dibaca:**\n{eml}\n\n"
-            "Semoga hari Anda produktif! Ada yang bisa saya bantu hari ini?"
-        )
-        return jsonify({"briefing": brief})
+        from features.daily_brief import get_cached_brief
+        data = get_cached_brief()
+        return jsonify({"briefing": data["content"], "generated_at": data["generated_at"]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/events")
+def sse_events():
+    """
+    SSE stream untuk notifikasi real-time: reminder, kalender, obat.
+    Frontend subscribe ke endpoint ini dan terima push event.
+    """
+    import queue
+    from flask import Response, stream_with_context
+
+    q = queue.Queue(maxsize=50)
+    with _sse_lock:
+        _sse_clients.append(q)
+
+    def generate():
+        # Kirim heartbeat agar koneksi tidak timeout
+        yield "event: connected\ndata: {}\n\n"
+        try:
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                    yield msg
+                except queue.Empty:
+                    yield ": heartbeat\n\n"   # SSE comment sebagai keepalive
+        except GeneratorExit:
+            pass
+        finally:
+            with _sse_lock:
+                if q in _sse_clients:
+                    _sse_clients.remove(q)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control"  : "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.route("/transcribe", methods=["POST"])
+def transcribe_audio():
+    """Transkripsi file audio (WAV/MP3/WebM) menggunakan Whisper."""
+    if "audio" not in request.files:
+        return jsonify({"error": "Tidak ada file audio"}), 400
+    audio_file = request.files["audio"]
+    if not audio_file.filename:
+        return jsonify({"error": "Nama file kosong"}), 400
+    try:
+        import tempfile, os
+        suffix = Path(audio_file.filename).suffix or ".webm"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+        from features import voice
+        result = voice.transcribe(tmp_path)
+        os.unlink(tmp_path)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/tasks", methods=["GET"])
+def get_tasks():
+    """Ambil daftar Google Tasks."""
+    try:
+        from features import tasks
+        return jsonify({"tasks": tasks.list_tasks()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/tasks", methods=["POST"])
+def add_task():
+    """Tambah task baru ke Google Tasks."""
+    try:
+        data   = request.get_json(silent=True) or {}
+        title  = data.get("title", "")
+        due    = data.get("due", "")
+        notes  = data.get("notes", "")
+        if not title:
+            return jsonify({"error": "Title wajib diisi"}), 400
+        from features import tasks
+        return jsonify({"result": tasks.add_task(title, due, notes)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/contacts/search", methods=["GET"])
+def search_contact():
+    """Cari kontak Google."""
+    name = request.args.get("q", "").strip()
+    if not name:
+        return jsonify({"error": "Parameter 'q' wajib diisi"}), 400
+    try:
+        from features import contacts
+        return jsonify({"result": contacts.search_contact(name)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -286,14 +517,22 @@ def status():
     if rag_ok:
         try: rag_count = get_chroma().count()
         except: pass
+    try:
+        from features import memory_semantic
+        sem_count = memory_semantic.count()
+    except Exception:
+        sem_count = 0
     return jsonify({
-        "status"    : "online",
-        "model"     : CHAT_MODEL,
-        "version"   : "APRIS v3.0",
-        "timestamp" : datetime.now(TZ).isoformat(),
-        "sessions"  : len(_chat_sessions),
-        "env"       : "railway" if os.getenv("RAILWAY_ENVIRONMENT") else "local",
-        "rag"       : {"enabled": RAG_ENABLED, "connected": rag_ok, "chunks": rag_count},
+        "status"        : "online",
+        "model"         : CHAT_MODEL,
+        "version"       : "APRIS v3.1",
+        "timestamp"     : datetime.now(TZ).isoformat(),
+        "sessions"      : len(_chat_sessions),
+        "sse_clients"   : len(_sse_clients),
+        "env"           : "railway" if os.getenv("RAILWAY_ENVIRONMENT") else "local",
+        "rag"           : {"enabled": RAG_ENABLED, "connected": rag_ok, "chunks": rag_count},
+        "semantic_memory": {"entries": sem_count},
+        "scheduler"     : {"running": _scheduler is not None and _scheduler.running if _scheduler else False},
     })
 
 
@@ -331,11 +570,15 @@ def chat():
                 types.Content(role="model", parts=[types.Part(text="Siap. Saya adalah APRIS.")])
             )
 
+        # Context Window Management: ringkas jika history terlalu panjang
+        history[:] = _summarize_history(history, client)
+
         # History percakapan sebelumnya
         for msg in history:
+            role = "user" if msg["role"] in ("user", "system") else "model"
             contents.append(
                 types.Content(
-                    role  = "user"  if msg["role"] == "user" else "model",
+                    role  = role,
                     parts = [types.Part(text=msg["content"])]
                 )
             )
@@ -353,12 +596,19 @@ def chat():
                 scraped_texts.append(f"--- Konten dari {url} ---\n{web_scraper.scrape_url_text(url)}")
             url_context = "\n\n".join(scraped_texts)
 
-        # Long-Term Memory: tarik fakta pengguna
+        # Long-Term Memory Tier-1: tarik fakta eksplisit pengguna
         try:
             from features import memory
             long_term_memory = memory.get_all_memories()
         except Exception:
             long_term_memory = ""
+
+        # Long-Term Memory Tier-2: semantic similarity search
+        try:
+            from features import memory_semantic
+            semantic_memory = memory_semantic.retrieve_memory(user_msg, top_k=3)
+        except Exception:
+            semantic_memory = ""
 
         # Medical Module: tarik status obat
         try:
@@ -368,12 +618,14 @@ def chat():
             medical_context = ""
 
         augmented_msg = user_msg
-        if rag_context or url_context or long_term_memory or medical_context:
+        if rag_context or url_context or long_term_memory or semantic_memory or medical_context:
             augmented_msg += "\n\n"
             if medical_context:
                 augmented_msg += f"---\n[Konteks Medis Pengguna]:\n{medical_context}\n---\n\n"
             if long_term_memory:
                 augmented_msg += f"---\n[Konteks dari Long-Term Memory]:\n{long_term_memory}\n---\n\n"
+            if semantic_memory:
+                augmented_msg += f"---\n[Konteks dari Memori Semantik]:\n{semantic_memory}\n---\n\n"
             if rag_context:
                 augmented_msg += f"---\n[Konteks dari Knowledge Base APRIS]:\n{rag_context}\n---\n\n"
             if url_context:
@@ -562,10 +814,66 @@ def chat():
                 except Exception as e:
                     apris_reply += f"\n\n_Maaf, terjadi kesalahan saat membuat dokumen: {str(e)}_"
 
+        # Intercept untuk Google Tasks
+        if "<ADD_TASK" in apris_reply or "<LIST_TASKS" in apris_reply or "<COMPLETE_TASK" in apris_reply:
+            import re
+            try:
+                from features import tasks as task_module
+
+                # ADD_TASK
+                add_matches = re.findall(
+                    r'<ADD_TASK title="([^"]+)"(?:\s+due="([^"]*)")?(?:\s+notes="([^"]*)")?\s*/?>', apris_reply
+                )
+                if add_matches:
+                    apris_reply = re.sub(r'<ADD_TASK[^>]*/?>', '', apris_reply).strip()
+                    for m in add_matches:
+                        res = task_module.add_task(m[0].strip(), m[1].strip(), m[2].strip())
+                        apris_reply += f"\n\n{res}"
+
+                # LIST_TASKS
+                if "<LIST_TASKS" in apris_reply:
+                    apris_reply = re.sub(r'<LIST_TASKS\s*/?>', '', apris_reply).strip()
+                    apris_reply += f"\n\n{task_module.list_tasks()}"
+
+                # COMPLETE_TASK
+                done_matches = re.findall(r'<COMPLETE_TASK title="([^"]+)"\s*/?>', apris_reply)
+                if done_matches:
+                    apris_reply = re.sub(r'<COMPLETE_TASK[^>]*/?>', '', apris_reply).strip()
+                    for kw in done_matches:
+                        res = task_module.complete_task(kw.strip())
+                        apris_reply += f"\n\n{res}"
+
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal mengakses Google Tasks: {e}_"
+
+        # Intercept untuk Google Contacts
+        if "<SEARCH_CONTACT" in apris_reply:
+            import re
+            matches = re.findall(r'<SEARCH_CONTACT name="([^"]+)"\s*/?>', apris_reply)
+            if matches:
+                apris_reply = re.sub(r'<SEARCH_CONTACT[^>]*/?>', '', apris_reply).strip()
+                try:
+                    from features import contacts as contacts_module
+                    for name in matches:
+                        res = contacts_module.search_contact(name.strip())
+                        apris_reply += f"\n\n{res}"
+                except Exception as e:
+                    apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
+
         # Simpan ke history sesi
         now_str = datetime.now(TZ).strftime("%H:%M")
         history.append({"role": "user",  "content": user_msg,    "time": now_str})
         history.append({"role": "apris", "content": apris_reply, "time": now_str})
+
+        # Simpan snippet ke Semantic Memory (background, tidak blocking)
+        def _store_snippet():
+            try:
+                from features import memory_semantic
+                snippet = f"User: {user_msg[:200]}\nAPRIS: {apris_reply[:200]}"
+                memory_semantic.store_memory(snippet, source="conversation")
+            except Exception:
+                pass
+        threading.Thread(target=_store_snippet, daemon=True).start()
 
         return jsonify({
             "reply"      : apris_reply,

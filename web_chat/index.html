@@ -931,14 +931,90 @@
       }
   }
 
+  // ── SSE Real-Time Notifications ─────────────────────
+  let sseSource = null;
+
+  function connectSSE() {
+    if (sseSource) sseSource.close();
+    sseSource = new EventSource(`${API}/events`);
+
+    sseSource.addEventListener('connected', () => {
+      console.log('[SSE] Terhubung ke server notifikasi');
+    });
+
+    // Reminder kalender dari proactive agent
+    sseSource.addEventListener('calendar_reminder', (e) => {
+      const data = JSON.parse(e.data);
+      showPushNotification('📅 Pengingat Kalender', data.message);
+      appendMsg('apris', data.message, new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
+    });
+
+    // Reminder obat yang terlewat dari proactive agent
+    sseSource.addEventListener('med_reminder', (e) => {
+      const data = JSON.parse(e.data);
+      showPushNotification('💊 Pengingat Obat', data.message);
+      appendMsg('apris', data.message, new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
+      // Juga trigger suara
+      speakText(data.message);
+    });
+
+    // Generic notification
+    sseSource.addEventListener('notification', (e) => {
+      const data = JSON.parse(e.data);
+      showPushNotification('🔔 APRIS', data.message);
+    });
+
+    sseSource.onerror = () => {
+      console.warn('[SSE] Koneksi terputus, reconnect dalam 10 detik...');
+      setTimeout(connectSSE, 10000);
+    };
+  }
+
+  function showPushNotification(title, body) {
+    // Browser notification jika diizinkan
+    if (Notification && Notification.permission === 'granted') {
+      new Notification(title, { body, icon: '/favicon.ico' });
+    }
+    // Toast in-page
+    showToast(title + ' — ' + body.replace(/\*/g, ''));
+  }
+
+  function showToast(msg) {
+    let toast = document.getElementById('apris-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'apris-toast';
+      Object.assign(toast.style, {
+        position: 'fixed', bottom: '90px', left: '50%',
+        transform: 'translateX(-50%)',
+        background: 'rgba(99,130,255,0.95)',
+        color: '#fff', padding: '12px 20px', borderRadius: '12px',
+        fontSize: '14px', zIndex: '9999', maxWidth: '380px',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+        transition: 'opacity .3s', pointerEvents: 'none',
+      });
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.opacity = '1';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 5000);
+  }
+
   // Init
   checkStatus();
   fetchBriefing();
   fetchMeds();
   setInterval(checkStatus, 30000);
-  setInterval(fetchMeds, 60000); // refresh meds every minute
-  setInterval(checkMedsAlarm, 30000); // check alarm every 30s
+  setInterval(fetchMeds, 60000);
+  setInterval(checkMedsAlarm, 30000);
   document.getElementById("msg-input").focus();
+
+  // SSE: minta izin notifikasi browser lalu sambungkan
+  if (Notification && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+  connectSSE();
 </script>
 </body>
 </html>
