@@ -163,6 +163,9 @@ ALLOWED_EMAILS    = [e.strip().lower() for e in _USER_EMAIL_RAW.split(",") if e.
 # Jika ALLOWED_EMAILS kosong, autentikasi dinonaktifkan (open access)
 AUTH_ENABLED      = bool(ALLOWED_EMAILS)
 
+# Secret internal untuk request antar-endpoint (misal dari /whatsapp ke /chat)
+INTERNAL_SECRET   = uuid.uuid4().hex
+
 
 def get_client():
     global _genai_client
@@ -587,6 +590,9 @@ def _require_auth():
     if not token:
         return None, (jsonify({"error": "Unauthorized", "code": "NO_TOKEN"}), 401)
 
+    if token == INTERNAL_SECRET:
+        return "internal", None
+
     _cleanup_auth_tokens()
     with _auth_tokens_lock:
         data = _auth_tokens.get(token)
@@ -691,6 +697,66 @@ def auth_status():
     if err:
         return jsonify({"authenticated": False}), 200
     return jsonify({"authenticated": True, "email": email})
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp Webhook (Twilio)
+# ---------------------------------------------------------------------------
+
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp():
+    """
+    Webhook untuk Twilio WhatsApp.
+    Menerima pesan, mengirim ke /chat secara internal, lalu merespons dengan TwiML.
+    """
+    from twilio.twiml.messaging_response import MessagingResponse
+    import requests
+
+    user_msg  = request.form.get("Body", "").strip()
+    sender_id = request.form.get("From", "unknown_wa")
+    num_media = int(request.form.get("NumMedia", 0))
+
+    payload = {
+        "message": user_msg,
+        "session_id": sender_id
+    }
+
+    # Jika ada gambar/media dari WhatsApp
+    if num_media > 0:
+        media_url = request.form.get("MediaUrl0")
+        try:
+            from features.whatsapp_media import media_to_base64
+            media_data = media_to_base64(media_url)
+            payload.update(media_data)
+        except Exception as e:
+            print(f"[WhatsApp] Gagal memproses media: {e}")
+            user_msg += f"\n[Sistem: Gagal memproses gambar/media yang dikirim: {e}]"
+            payload["message"] = user_msg
+
+    # Kirim ke endpoint /chat internal kita sendiri (port mengikuti env PORT)
+    port = os.getenv("PORT", "5052")
+    try:
+        res = requests.post(
+            f"http://127.0.0.1:{port}/chat",
+            json=payload,
+            headers={"X-Auth-Token": INTERNAL_SECRET},
+            timeout=60
+        )
+        res_data = res.json()
+        reply_text = res_data.get("reply", "Maaf, terjadi kesalahan saat memproses pesan.")
+    except Exception as e:
+        print(f"[WhatsApp] Internal request failed: {e}")
+        reply_text = "Maaf, server sedang sibuk atau mengalami gangguan."
+
+    # Format balasan ke Twilio (TwiML)
+    resp = MessagingResponse()
+    resp.message(reply_text)
+    return str(resp)
+
+
+# ---------------------------------------------------------------------------
+# Chat Endpoint Utama
+# ---------------------------------------------------------------------------
 
 
 @app.route("/chat", methods=["POST"])
