@@ -700,47 +700,66 @@ def auth_status():
 
 
 # ---------------------------------------------------------------------------
-# WhatsApp Webhook (Twilio)
+# WhatsApp Webhook (Green-API)
 # ---------------------------------------------------------------------------
 
-@app.route("/whatsapp", methods=["POST"])
-def whatsapp():
+def _process_green_api(data):
     """
-    Webhook untuk Twilio WhatsApp.
-    Menerima pesan, mengirim ke /chat secara internal, lalu merespons dengan TwiML.
+    Diproses di background agar webhook merespons 200 OK dengan cepat.
     """
-    from twilio.twiml.messaging_response import MessagingResponse
     import requests
+    from features import green_api
+    
+    # 1. Ekstrak data dari Green-API webhook
+    sender_data = data.get("senderData", {})
+    chat_id = sender_data.get("chatId", "")
+    if not chat_id:
+        return
+        
+    msg_data = data.get("messageData", {})
+    msg_type = msg_data.get("typeMessage", "")
+    
+    user_msg = ""
+    media_data = {}
+    
+    if msg_type == "textMessage" or msg_type == "extendedTextMessage":
+        user_msg = msg_data.get("textMessageData", {}).get("textMessage", "")
+    elif msg_type in ["imageMessage", "documentMessage", "audioMessage", "videoMessage"]:
+        # Ekstrak caption/text
+        user_msg = msg_data.get("fileMessageData", {}).get("caption", "")
+        # Download media
+        download_url = msg_data.get("fileMessageData", {}).get("downloadUrl", "")
+        mime_type = msg_data.get("fileMessageData", {}).get("mimeType", "")
+        if download_url:
+            try:
+                media_data = green_api.media_to_base64(download_url, mime_type)
+            except Exception as e:
+                print(f"[Green-API] Gagal memproses media: {e}")
+                user_msg += f"\n[Sistem: Gagal memproses file/media yang dikirim: {e}]"
+    else:
+        # Ignore tipe pesan lain
+        return
 
-    user_msg  = request.form.get("Body", "").strip()
-    sender_id = request.form.get("From", "unknown_wa")
-    num_media = int(request.form.get("NumMedia", 0))
+    user_msg = user_msg.strip()
+    if not user_msg and not media_data:
+        return
 
+    # 2. Siapkan payload untuk endpoint /chat internal kita
     payload = {
-        "message": user_msg,
-        "session_id": sender_id
+        "message": user_msg or "[Kirim Media]",
+        "session_id": chat_id
     }
+    if media_data:
+        payload.update(media_data)
 
-    # Jika ada gambar/media dari WhatsApp
-    if num_media > 0:
-        media_url = request.form.get("MediaUrl0")
-        try:
-            from features.whatsapp_media import media_to_base64
-            media_data = media_to_base64(media_url)
-            payload.update(media_data)
-        except Exception as e:
-            print(f"[WhatsApp] Gagal memproses media: {e}")
-            user_msg += f"\n[Sistem: Gagal memproses gambar/media yang dikirim: {e}]"
-            payload["message"] = user_msg
-
-    # Kirim ke endpoint /chat internal kita sendiri (port mengikuti env PORT)
+    # 3. Panggil /chat
     port = os.getenv("PORT", "5052")
     try:
         res = requests.post(
             f"http://127.0.0.1:{port}/chat",
             json=payload,
             headers={"X-Auth-Token": INTERNAL_SECRET},
-            timeout=60
+            timeout=120
         )
         res_data = res.json()
         reply_text = res_data.get("reply", "Maaf, terjadi kesalahan saat memproses pesan.")
@@ -748,10 +767,25 @@ def whatsapp():
         print(f"[WhatsApp] Internal request failed: {e}")
         reply_text = "Maaf, server sedang sibuk atau mengalami gangguan."
 
-    # Format balasan ke Twilio (TwiML)
-    resp = MessagingResponse()
-    resp.message(reply_text)
-    return str(resp)
+    # 4. Kirim balasan ke WhatsApp via Green-API
+    green_api.send_message(chat_id, reply_text)
+
+
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp():
+    """
+    Webhook untuk Green-API.
+    Menerima notifikasi pesan masuk dan merespons 200 OK.
+    """
+    data = request.get_json(silent=True) or {}
+    
+    # Pastikan ini event pesan masuk
+    if data.get("typeWebhook") == "incomingMessageReceived":
+        # Jalankan pemrosesan di background thread agar server tidak timeout
+        threading.Thread(target=_process_green_api, args=(data,), daemon=True).start()
+        
+    # Selalu return 200 OK secepatnya ke Green-API
+    return jsonify({"status": "ok"}), 200
 
 
 # ---------------------------------------------------------------------------
