@@ -4,16 +4,19 @@ chat_server.py — APRIS Web Chat Backend
 Flask server yang menghubungkan Web Chat UI ke Gemini AI (APRIS).
 
 Endpoints:
-    POST /chat          — kirim pesan, dapat balasan APRIS
-    GET  /history       — ambil riwayat percakapan sesi ini
-    POST /clear         — hapus riwayat percakapan
-    GET  /status        — cek status server & model
+    POST /auth/request-otp — minta OTP ke email terdaftar
+    POST /auth/verify-otp  — verifikasi OTP, dapat auth_token
+    POST /chat             — kirim pesan, dapat balasan APRIS
+    GET  /history          — ambil riwayat percakapan sesi ini
+    POST /clear            — hapus riwayat percakapan
+    GET  /status           — cek status server & model
 """
 
 import os
 import sys
 import json
 import uuid
+import secrets
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -48,6 +51,13 @@ RAG_DB_PATH       = os.getenv("RAG_DB_PATH", _RAG_DEFAULT)
 RAG_COLLECTION    = os.getenv("RAG_COLLECTION", "apris_knowledge")
 RAG_TOP_K         = int(os.getenv("RAG_TOP_K", 3))
 RAG_ENABLED       = os.getenv("RAG_ENABLED", "true").lower() == "true"
+
+# WhatsApp / Twilio config
+TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_WA_FROM       = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+_WA_ALLOWED_RAW      = os.getenv("WHATSAPP_ALLOWED_NUMBERS", "")
+WA_ALLOWED_NUMBERS   = [n.strip() for n in _WA_ALLOWED_RAW.split(",") if n.strip()]
 
 # Timezone WIB (UTC+7) — fallback tanpa tzdata
 try:
@@ -138,6 +148,20 @@ _sessions_lock = threading.Lock()
 _sse_clients   = []             # list of SSE queue untuk /events stream
 _sse_lock      = threading.Lock()
 _scheduler     = None           # APScheduler instance (lazy init)
+
+# ---------------------------------------------------------------------------
+# Auth — OTP token store
+# ---------------------------------------------------------------------------
+_auth_tokens      = {}               # token → {"email": str, "exp": float}
+_auth_tokens_lock = threading.Lock()
+AUTH_TOKEN_TTL_H  = 24              # Token berlaku 24 jam
+
+# Email yang diizinkan login (dari USER_EMAIL di .env)
+_USER_EMAIL_RAW   = os.getenv("USER_EMAIL", "")
+ALLOWED_EMAILS    = [e.strip().lower() for e in _USER_EMAIL_RAW.split(",") if e.strip()]
+
+# Jika ALLOWED_EMAILS kosong, autentikasi dinonaktifkan (open access)
+AUTH_ENABLED      = bool(ALLOWED_EMAILS)
 
 
 def get_client():
@@ -536,8 +560,146 @@ def status():
     })
 
 
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+def _cleanup_auth_tokens():
+    """Hapus token yang sudah kedaluwarsa."""
+    import time
+    now = time.time()
+    with _auth_tokens_lock:
+        expired = [t for t, d in _auth_tokens.items() if d["exp"] < now]
+        for t in expired:
+            del _auth_tokens[t]
+
+
+def _require_auth():
+    """
+    Validasi token dari header X-Auth-Token.
+    Return (email, None) jika valid, atau (None, Response error) jika tidak.
+    """
+    if not AUTH_ENABLED:
+        return "anonymous", None   # Auth dinonaktifkan — semua boleh masuk
+
+    import time
+    token = request.headers.get("X-Auth-Token", "").strip()
+    if not token:
+        return None, (jsonify({"error": "Unauthorized", "code": "NO_TOKEN"}), 401)
+
+    _cleanup_auth_tokens()
+    with _auth_tokens_lock:
+        data = _auth_tokens.get(token)
+
+    if not data:
+        return None, (jsonify({"error": "Token tidak valid atau kedaluwarsa.", "code": "INVALID_TOKEN"}), 401)
+
+    if time.time() > data["exp"]:
+        with _auth_tokens_lock:
+            _auth_tokens.pop(token, None)
+        return None, (jsonify({"error": "Token kedaluwarsa. Silakan login ulang.", "code": "TOKEN_EXPIRED"}), 401)
+
+    return data["email"], None
+
+
+# ---------------------------------------------------------------------------
+# Auth Endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/auth/request-otp", methods=["POST"])
+def auth_request_otp():
+    """
+    Minta OTP dikirim ke email.
+    Body: {"email": "user@example.com"}
+    """
+    data  = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+
+    if not email:
+        return jsonify({"success": False, "message": "Email wajib diisi."}), 400
+
+    # Validasi whitelist
+    if AUTH_ENABLED and email not in ALLOWED_EMAILS:
+        return jsonify({
+            "success" : False,
+            "message" : "Email tidak terdaftar. Hubungi administrator."
+        }), 403
+
+    try:
+        from features.otp_email import send_otp
+        result = send_otp(email)
+        status_code = 200 if result["success"] else 429
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
+
+
+@app.route("/auth/verify-otp", methods=["POST"])
+def auth_verify_otp():
+    """
+    Verifikasi OTP dan dapatkan auth token.
+    Body: {"email": "user@example.com", "otp": "123456"}
+    Return: {"success": true, "auth_token": "...", "email": "..."}
+    """
+    import time
+    data  = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    otp   = (data.get("otp")   or "").strip()
+
+    if not email or not otp:
+        return jsonify({"success": False, "message": "Email dan OTP wajib diisi."}), 400
+
+    try:
+        from features.otp_email import verify_otp
+        result = verify_otp(email, otp)
+
+        if not result.get("verified"):
+            return jsonify({"success": False, "message": result["message"]}), 401
+
+        # Generate auth token
+        token = secrets.token_hex(32)
+        exp   = time.time() + AUTH_TOKEN_TTL_H * 3600
+        with _auth_tokens_lock:
+            _auth_tokens[token] = {"email": email, "exp": exp}
+
+        print(f"[Auth] Login berhasil: {email}", flush=True)
+        return jsonify({
+            "success"    : True,
+            "auth_token" : token,
+            "email"      : email,
+            "expires_in" : AUTH_TOKEN_TTL_H * 3600,
+            "message"    : result["message"]
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Error: {str(e)}"}), 500
+
+
+@app.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    """Hapus token aktif (logout)."""
+    token = request.headers.get("X-Auth-Token", "").strip()
+    if token:
+        with _auth_tokens_lock:
+            _auth_tokens.pop(token, None)
+    return jsonify({"success": True, "message": "Logout berhasil."})
+
+
+@app.route("/auth/status", methods=["GET"])
+def auth_status():
+    """Cek apakah token masih valid."""
+    email, err = _require_auth()
+    if err:
+        return jsonify({"authenticated": False}), 200
+    return jsonify({"authenticated": True, "email": email})
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
+    # Verifikasi auth token
+    email, auth_err = _require_auth()
+    if auth_err:
+        return auth_err
+
     data       = request.get_json(silent=True) or {}
     user_msg   = (data.get("message") or "").strip()
     session_id = data.get("session_id") or "default"
@@ -1024,6 +1186,500 @@ def clear():
     with _sessions_lock:
         _chat_sessions[session_id] = {"messages": [], "last_access": datetime.now(TZ)}
     return jsonify({"status": "cleared", "session_id": session_id})
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp Gateway — Twilio Webhook
+# ---------------------------------------------------------------------------
+
+def _wa_send_message(to: str, body: str):
+    """
+    Kirim pesan WhatsApp via Twilio REST API.
+    Digunakan untuk notifikasi proaktif / pengiriman awal.
+    """
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        print("[WA] Twilio credentials belum dikonfigurasi.", flush=True)
+        return
+    try:
+        from twilio.rest import Client as TwilioClient
+        tc = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        tc.messages.create(
+            from_=TWILIO_WA_FROM,
+            to=f"whatsapp:{to}" if not to.startswith("whatsapp:") else to,
+            body=body,
+        )
+    except Exception as e:
+        print(f"[WA] Gagal kirim pesan: {e}", flush=True)
+
+
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp_webhook():
+    """
+    Twilio WhatsApp Webhook.
+    Twilio POST ke endpoint ini setiap kali ada pesan masuk dari WA.
+    
+    Form fields dari Twilio:
+        From      : nomor pengirim (e.g. whatsapp:+6285608428045)
+        Body      : teks pesan
+        NumMedia  : jumlah media yang dilampirkan
+        MediaUrl0 : URL media pertama (foto/dokumen)
+        MediaContentType0 : MIME type media pertama
+    """
+    from flask import request, Response
+    import re as _re
+
+    # --- Ambil data dari Twilio ---
+    from_number  = request.form.get("From", "")        # "whatsapp:+6285608428045"
+    user_msg     = (request.form.get("Body") or "").strip()
+    num_media    = int(request.form.get("NumMedia", 0))
+    media_url    = request.form.get("MediaUrl0", "")
+    media_mime   = request.form.get("MediaContentType0", "")
+
+    # Bersihkan prefix "whatsapp:" dari nomor
+    clean_number = from_number.replace("whatsapp:", "").strip()
+
+    print(f"[WA] Pesan dari {clean_number}: '{user_msg[:80]}' | media={num_media}", flush=True)
+
+    # --- Security: whitelist nomor ---
+    if WA_ALLOWED_NUMBERS and clean_number not in WA_ALLOWED_NUMBERS:
+        print(f"[WA] ⛔ Nomor {clean_number} tidak diizinkan.", flush=True)
+        return _twiml_reply("")
+
+    # --- Validasi: pesan dan/atau media harus ada ---
+    if not user_msg and num_media == 0:
+        return _twiml_reply("Maaf, pesan tidak terbaca. Kirim ulang pesan teks atau media.")
+
+    if not GEMINI_API_KEY:
+        return _twiml_reply("_Sistem error: API Key belum dikonfigurasi._")
+
+    # --- Gunakan nomor WA sebagai session_id (history per user) ---
+    session_id = f"wa_{clean_number.replace('+', '')}"
+    history    = get_or_create_session(session_id)
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = get_client()
+
+        # Bangun contents: system prompt + history + pesan baru
+        contents = []
+
+        if not history:
+            now_str_full = datetime.now(TZ).strftime("%A, %Y-%m-%d %H:%M:%S %z")
+            # Beri tahu APRIS bahwa ini adalah sesi WhatsApp
+            wa_system = (
+                f"[SYSTEM]\nWaktu saat ini: {now_str_full}\n"
+                f"Platform: WhatsApp (nomor: {clean_number})\n\n"
+                + SYSTEM_PROMPT
+            )
+            contents.append(types.Content(role="user",  parts=[types.Part(text=wa_system)]))
+            contents.append(types.Content(role="model", parts=[types.Part(text="Siap. Saya adalah APRIS.")])
+            )
+
+        # Context Window Management
+        history[:] = _summarize_history(history, client)
+
+        for msg in history:
+            role = "user" if msg["role"] in ("user", "system") else "model"
+            contents.append(types.Content(
+                role=role,
+                parts=[types.Part(text=msg["content"])]
+            ))
+
+        # RAG retrieval
+        rag_context = rag_retrieve(user_msg) if user_msg else ""
+
+        # Long-Term Memory
+        try:
+            from features import memory
+            long_term_memory = memory.get_all_memories()
+        except Exception:
+            long_term_memory = ""
+
+        try:
+            from features import memory_semantic
+            semantic_memory = memory_semantic.retrieve_memory(user_msg, top_k=3) if user_msg else ""
+        except Exception:
+            semantic_memory = ""
+
+        try:
+            from features import medical
+            medical_context = medical.get_meds_summary()
+        except Exception:
+            medical_context = ""
+
+        # Augment pesan dengan konteks
+        augmented_msg = user_msg or "[Pengguna mengirim media tanpa teks]"
+        if rag_context or long_term_memory or semantic_memory or medical_context:
+            augmented_msg += "\n\n"
+            if medical_context:
+                augmented_msg += f"---\n[Konteks Medis]:\n{medical_context}\n---\n\n"
+            if long_term_memory:
+                augmented_msg += f"---\n[Long-Term Memory]:\n{long_term_memory}\n---\n\n"
+            if semantic_memory:
+                augmented_msg += f"---\n[Memori Semantik]:\n{semantic_memory}\n---\n\n"
+            if rag_context:
+                augmented_msg += f"---\n[Knowledge Base APRIS]:\n{rag_context}\n---\n\n"
+
+        # Bangun parts pesan user (teks + media opsional)
+        user_parts = [types.Part(text=augmented_msg)]
+
+        # Proses media jika ada
+        if num_media > 0 and media_url:
+            try:
+                from features import whatsapp_media
+                media_info = whatsapp_media.media_to_base64(media_url)
+                mime_t     = media_info["file_mime"]
+                file_bytes = __import__("base64").b64decode(media_info["file_base64"])
+                desc       = whatsapp_media.get_media_description(mime_t)
+                print(f"[WA] Media: {desc} ({mime_t}, {media_info['size_bytes']//1024}KB)", flush=True)
+
+                if mime_t.startswith("image/") or mime_t.startswith("audio/"):
+                    # Kirim langsung ke Gemini sebagai inline data
+                    user_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_t))
+                else:
+                    # Dokumen: ekstrak teks dulu
+                    doc_text = ""
+                    try:
+                        if "pdf" in mime_t:
+                            import fitz
+                            doc = fitz.open("pdf", file_bytes)
+                            for page in doc:
+                                doc_text += page.get_text()
+                            doc.close()
+                        elif "word" in mime_t or "msword" in mime_t:
+                            from docx import Document
+                            import io
+                            doc = Document(io.BytesIO(file_bytes))
+                            doc_text = "\n".join([p.text for p in doc.paragraphs])
+                        elif "text/" in mime_t:
+                            doc_text = file_bytes.decode("utf-8", errors="ignore")
+                    except Exception as doc_e:
+                        doc_text = f"[Gagal membaca dokumen: {doc_e}]"
+
+                    if doc_text:
+                        user_parts[0] = types.Part(text=augmented_msg + f"\n\n---\n[Isi Dokumen dari WA]:\n{doc_text}\n---")
+            except Exception as me:
+                print(f"[WA] Gagal proses media: {me}", flush=True)
+                user_parts[0] = types.Part(text=augmented_msg + f"\n\n_[Catatan: media gagal diproses — {me}]_")
+
+        contents.append(types.Content(role="user", parts=user_parts))
+
+        # Generate AI response
+        search_config = types.GenerateContentConfig(tools=[{"google_search": {}}])
+        response  = generate_with_retry(client, CHAT_MODEL, contents, config=search_config)
+        apris_reply = response.text.strip()
+
+        # ============================================================
+        # Jalankan semua action interceptors yang sama dengan /chat
+        # (Calendar, Gmail, Weather, Notion, Memory, Tasks, dll)
+        # ============================================================
+        apris_reply = _run_action_interceptors(apris_reply)
+
+        # Simpan ke history
+        now_str = datetime.now(TZ).strftime("%H:%M")
+        history.append({"role": "user",  "content": user_msg or "[media]", "time": now_str})
+        history.append({"role": "apris", "content": apris_reply,            "time": now_str})
+
+        # Simpan ke semantic memory (background)
+        def _store():
+            try:
+                from features import memory_semantic
+                snippet = f"User: {(user_msg or '[media]')[:200]}\nAPRIS: {apris_reply[:200]}"
+                memory_semantic.store_memory(snippet, source="whatsapp")
+            except Exception:
+                pass
+        threading.Thread(target=_store, daemon=True).start()
+
+        print(f"[WA] Reply ({len(apris_reply)} chars) → {clean_number}", flush=True)
+        return _twiml_reply(apris_reply)
+
+    except Exception as e:
+        err_str = str(e)
+        print(f"[WA] Error: {err_str}", flush=True)
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            return _twiml_reply("_Sistem sedang sibuk. Coba lagi dalam 30 detik._")
+        return _twiml_reply(f"_Maaf, terjadi kesalahan: {err_str[:100]}_")
+
+
+def _twiml_reply(message: str) -> "Response":
+    """
+    Buat TwiML XML response untuk Twilio.
+    Twilio membutuhkan format XML khusus untuk membalas pesan WA.
+    """
+    from flask import Response
+    # Escape karakter XML khusus
+    safe_msg = (
+        message
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+    # Split pesan panjang > 1600 karakter (batas WA per bubble)
+    if len(safe_msg) > 1600:
+        parts = [safe_msg[i:i+1600] for i in range(0, len(safe_msg), 1600)]
+        messages_xml = "".join(f"<Message>{p}</Message>" for p in parts)
+    else:
+        messages_xml = f"<Message>{safe_msg}</Message>" if safe_msg else ""
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    {messages_xml}
+</Response>"""
+    return Response(twiml, mimetype="text/xml")
+
+
+def _run_action_interceptors(apris_reply: str) -> str:
+    """
+    Jalankan semua action interceptors yang ada di /chat juga untuk /whatsapp.
+    Refactored ke fungsi terpisah agar bisa digunakan oleh kedua endpoint.
+    """
+    import re as _re
+
+    # --- Calendar: Check ---
+    if "<CHECK_CALENDAR/>" in apris_reply:
+        import google_calendar
+        try:
+            cal_data = google_calendar.get_upcoming_events(5)
+            apris_reply = apris_reply.replace("<CHECK_CALENDAR/>", f"\n\n{cal_data}")
+        except Exception as e:
+            apris_reply = apris_reply.replace("<CHECK_CALENDAR/>", f"\n\n_Gagal membaca kalender: {e}_")
+
+    # --- Calendar: Create ---
+    if "<CREATE_EVENT" in apris_reply:
+        import google_calendar
+        match = _re.search(r'<CREATE_EVENT title="([^"]+)" start="([^"]+)" end="([^"]+)">(.*?)</CREATE_EVENT>', apris_reply, _re.DOTALL)
+        if match:
+            title, start_t, end_t, desc = match.groups()
+            apris_reply = _re.sub(r'<CREATE_EVENT.*?</CREATE_EVENT>', '', apris_reply, flags=_re.DOTALL).strip()
+            try:
+                res = google_calendar.create_event(title, start_t, end_t, desc.strip())
+                apris_reply += f"\n\n✅ *{res}*"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal membuat jadwal: {e}_"
+
+    # --- Email: Check ---
+    if "<CHECK_EMAIL" in apris_reply:
+        try:
+            import google_gmail
+            email_data = google_gmail.get_recent_emails(5)
+            apris_reply = _re.sub(r'<CHECK_EMAIL\s*/?>', f"\n\n{email_data}", apris_reply).strip()
+        except Exception as e:
+            apris_reply = _re.sub(r'<CHECK_EMAIL\s*/?>', f"\n\n_Gagal membaca email: {e}_", apris_reply).strip()
+
+    # --- Email: Summarize ---
+    if "<SUMMARIZE_INBOX" in apris_reply:
+        try:
+            import google_gmail
+            summary = google_gmail.summarize_inbox(10)
+            apris_reply = _re.sub(r'<SUMMARIZE_INBOX\s*/?>', f"\n\n{summary}", apris_reply).strip()
+        except Exception as e:
+            apris_reply = _re.sub(r'<SUMMARIZE_INBOX\s*/?>', f"\n\n_Gagal merangkum inbox: {e}_", apris_reply).strip()
+
+    # --- Email: Search ---
+    if "<SEARCH_EMAIL" in apris_reply:
+        m = _re.search(r'<SEARCH_EMAIL\s+query="([^"]+)"\s*/?>', apris_reply)
+        if m:
+            q = m.group(1).strip()
+            apris_reply = _re.sub(r'<SEARCH_EMAIL[^>]*/>', '', apris_reply).strip()
+            try:
+                import google_gmail
+                result = google_gmail.search_emails(q)
+                apris_reply += f"\n\n🔍 *Hasil Pencarian Email:*\n{result}"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal mencari email: {e}_"
+
+    # --- Email: Send ---
+    if "<SEND_EMAIL" in apris_reply:
+        m = _re.search(r'<SEND_EMAIL\s+to="([^"]+)"\s+subject="([^"]+)"\s+body="([^"]+)"\s*/?>', apris_reply, _re.DOTALL)
+        if m:
+            to_addr, subj, body_txt = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+            apris_reply = _re.sub(r'<SEND_EMAIL[^>]*/>', '', apris_reply).strip()
+            try:
+                import google_gmail
+                result = google_gmail.send_email(to_addr, subj, body_txt)
+                apris_reply += f"\n\n✉️ *{result}*"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal mengirim email: {e}_"
+
+    # --- Email: Reply ---
+    if "<REPLY_EMAIL" in apris_reply:
+        m = _re.search(r'<REPLY_EMAIL\s+id="([^"]+)"\s+body="([^"]+)"\s*/?>', apris_reply, _re.DOTALL)
+        if m:
+            msg_id, reply_body = m.group(1).strip(), m.group(2).strip()
+            apris_reply = _re.sub(r'<REPLY_EMAIL[^>]*/>', '', apris_reply).strip()
+            try:
+                import google_gmail
+                result = google_gmail.reply_email(msg_id, reply_body)
+                apris_reply += f"\n\n↩️ *{result}*"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal membalas email: {e}_"
+
+    # --- Email: Mark Read ---
+    if "<MARK_READ" in apris_reply:
+        m = _re.search(r'<MARK_READ\s+id="([^"]+)"\s*/?>', apris_reply)
+        if m:
+            msg_id = m.group(1).strip()
+            apris_reply = _re.sub(r'<MARK_READ[^>]*/>', '', apris_reply).strip()
+            try:
+                import google_gmail
+                result = google_gmail.mark_as_read(msg_id)
+                apris_reply += f"\n\n✅ *{result}*"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal menandai email: {e}_"
+
+    # --- Email: Mark All Read ---
+    if "<MARK_ALL_READ" in apris_reply:
+        try:
+            import google_gmail
+            result = google_gmail.mark_all_inbox_read()
+            apris_reply = _re.sub(r'<MARK_ALL_READ\s*/?>', f"\n\n✅ *{result}*", apris_reply).strip()
+        except Exception as e:
+            apris_reply = _re.sub(r'<MARK_ALL_READ\s*/?>', f"\n\n_Gagal: {e}_", apris_reply).strip()
+
+    # --- Weather ---
+    if "<CHECK_WEATHER" in apris_reply:
+        match = _re.search(r'<CHECK_WEATHER location="([^"]+)"\s*/?>', apris_reply)
+        if match:
+            loc = match.group(1)
+            try:
+                from features import weather
+                w_data = weather.get_weather_by_city(loc)
+                apris_reply = _re.sub(r'<CHECK_WEATHER[^>]*/?>', f"\n\n*{w_data}*", apris_reply).strip()
+            except Exception as e:
+                apris_reply = _re.sub(r'<CHECK_WEATHER[^>]*/?>', f"\n\n_Gagal mengecek cuaca: {e}_", apris_reply).strip()
+
+    # --- Notion ---
+    if "<NOTION_WRITE" in apris_reply:
+        match = _re.search(r'<NOTION_WRITE title="([^"]+)">(.*?)</NOTION_WRITE>', apris_reply, _re.DOTALL)
+        if match:
+            title   = match.group(1).strip()
+            content = match.group(2).strip()
+            apris_reply = _re.sub(r'<NOTION_WRITE.*?</NOTION_WRITE>', '', apris_reply, flags=_re.DOTALL).strip()
+            try:
+                from features import notion_api
+                n_res = notion_api.write_to_notion(title, content)
+                apris_reply += f"\n\n✅ *{n_res}*"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal menulis ke Notion: {e}_"
+
+    # --- Long-Term Memory ---
+    if "<REMEMBER" in apris_reply or "<FORGET" in apris_reply:
+        try:
+            from features import memory
+            rem_matches = _re.findall(r'<REMEMBER fact="([^"]+)"\s*/?>', apris_reply)
+            if rem_matches:
+                apris_reply = _re.sub(r'<REMEMBER[^>]*/?>', '', apris_reply).strip()
+                for fact in rem_matches:
+                    res = memory.add_memory(fact.strip())
+                    apris_reply += f"\n\n🧠 *{res}*"
+            for_matches = _re.findall(r'<FORGET fact="([^"]+)"\s*/?>', apris_reply)
+            if for_matches:
+                apris_reply = _re.sub(r'<FORGET[^>]*/?>', '', apris_reply).strip()
+                for fact in for_matches:
+                    res = memory.remove_memory(fact.strip())
+                    apris_reply += f"\n\n🧠 *{res}*"
+        except Exception:
+            pass
+
+    # --- Pengingat Obat ---
+    if "<ADD_MEDICINE" in apris_reply:
+        match = _re.search(r'<ADD_MEDICINE name="([^"]+)" time="([^"]+)" reason="([^"]+)"\s*/?>', apris_reply)
+        if match:
+            m_name, m_time, m_reason = match.group(1).strip(), match.group(2).strip(), match.group(3).strip()
+            apris_reply = _re.sub(r'<ADD_MEDICINE[^>]*/>', '', apris_reply).strip()
+            try:
+                from features import medical
+                res = medical.add_medicine(m_name, m_time, m_reason)
+                apris_reply += f"\n\n💊 *{res}*"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal menambahkan jadwal obat: {e}_"
+
+    # --- Peta: Cari Tempat ---
+    if "<SEARCH_PLACES" in apris_reply:
+        match = _re.search(r'<SEARCH_PLACES\s+query="([^"]+)"\s*/?>', apris_reply)
+        if match:
+            q = match.group(1).strip()
+            apris_reply = _re.sub(r'<SEARCH_PLACES[^>]*/>', '', apris_reply).strip()
+            apris_reply = _re.sub(r'<SEARCH_PLACES[^>]*>', '', apris_reply).strip()
+            try:
+                from features import location
+                res = location.search_places(q)
+                apris_reply += f"\n\n\U0001f5fa\ufe0f *Informasi Lokasi:*\n{res}"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal mencari lokasi: {e}_"
+
+    # --- Peta: Rute ---
+    if "<GET_ROUTE" in apris_reply:
+        match = _re.search(r'<GET_ROUTE\s+origin="([^"]+)"\s+destination="([^"]+)"\s*/?>', apris_reply)
+        if match:
+            ori, dest = match.group(1).strip(), match.group(2).strip()
+            apris_reply = _re.sub(r'<GET_ROUTE[^>]*/>', '', apris_reply).strip()
+            apris_reply = _re.sub(r'<GET_ROUTE[^>]*>', '', apris_reply).strip()
+            try:
+                from features import location
+                res = location.get_route(ori, dest)
+                apris_reply += f"\n\n\U0001f697 *Panduan Rute:*\n{res}"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal menghitung rute: {e}_"
+
+    # --- Google Drive: Create Doc ---
+    if "<CREATE_DOC" in apris_reply:
+        import google_drive
+        match = _re.search(r'<CREATE_DOC title="([^"]+)">(.*?)</CREATE_DOC>', apris_reply, _re.DOTALL)
+        if match:
+            title   = match.group(1).strip()
+            content = match.group(2).strip()
+            apris_reply = _re.sub(r'<CREATE_DOC.*?</CREATE_DOC>', '', apris_reply, flags=_re.DOTALL).strip()
+            try:
+                doc_url = google_drive.create_google_doc(title, content)
+                if "Error" in doc_url:
+                    apris_reply += f"\n\n_Maaf, gagal membuat dokumen: {doc_url}_"
+                else:
+                    apris_reply += f"\n\n✅ *Dokumen berhasil dibuat!*\nJudul: {title}\nBuka: {doc_url}"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal membuat dokumen: {e}_"
+
+    # --- Google Tasks ---
+    if "<ADD_TASK" in apris_reply or "<LIST_TASKS" in apris_reply or "<COMPLETE_TASK" in apris_reply:
+        try:
+            from features import tasks as task_module
+            add_matches = _re.findall(
+                r'<ADD_TASK title="([^"]+)"(?:\s+due="([^"]*)")?(?:\s+notes="([^"]*)")?\s*/?>', apris_reply
+            )
+            if add_matches:
+                apris_reply = _re.sub(r'<ADD_TASK[^>]*/?>', '', apris_reply).strip()
+                for m in add_matches:
+                    res = task_module.add_task(m[0].strip(), m[1].strip(), m[2].strip())
+                    apris_reply += f"\n\n{res}"
+            if "<LIST_TASKS" in apris_reply:
+                apris_reply = _re.sub(r'<LIST_TASKS\s*/?>', '', apris_reply).strip()
+                apris_reply += f"\n\n{task_module.list_tasks()}"
+            done_matches = _re.findall(r'<COMPLETE_TASK title="([^"]+)"\s*/?>', apris_reply)
+            if done_matches:
+                apris_reply = _re.sub(r'<COMPLETE_TASK[^>]*/?>', '', apris_reply).strip()
+                for kw in done_matches:
+                    res = task_module.complete_task(kw.strip())
+                    apris_reply += f"\n\n{res}"
+        except Exception as e:
+            apris_reply += f"\n\n_Gagal mengakses Google Tasks: {e}_"
+
+    # --- Google Contacts ---
+    if "<SEARCH_CONTACT" in apris_reply:
+        matches = _re.findall(r'<SEARCH_CONTACT name="([^"]+)"\s*/?>', apris_reply)
+        if matches:
+            apris_reply = _re.sub(r'<SEARCH_CONTACT[^>]*/?>', '', apris_reply).strip()
+            try:
+                from features import contacts as contacts_module
+                for name in matches:
+                    res = contacts_module.search_contact(name.strip())
+                    apris_reply += f"\n\n{res}"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
+
+    return apris_reply
 
 
 # ---------------------------------------------------------------------------

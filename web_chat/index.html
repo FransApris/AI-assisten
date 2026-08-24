@@ -295,9 +295,162 @@
       animation: fade-in .3s ease;
     }
     @keyframes fade-in { from { opacity:0; } to { opacity:1; } }
+
+    /* ── Login Screen ──────────────────────────────── */
+    #login-overlay {
+      position: fixed; inset: 0; z-index: 1000;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg-deep);
+      animation: fade-in .4s ease;
+    }
+    #login-overlay.hidden { display: none; }
+
+    .login-card {
+      width: 100%; max-width: 420px;
+      margin: 20px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px 36px;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(99,130,255,0.1);
+      animation: slide-up .5s ease;
+    }
+
+    .login-logo {
+      font-size: 48px; text-align: center; margin-bottom: 8px;
+      filter: drop-shadow(0 0 24px rgba(99,130,255,0.6));
+    }
+    .login-title {
+      text-align: center; font-size: 22px; font-weight: 700;
+      letter-spacing: -0.5px; margin-bottom: 4px;
+    }
+    .login-title span { background: var(--user-bg); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .login-sub {
+      text-align: center; font-size: 13px; color: var(--text-2);
+      margin-bottom: 28px; line-height: 1.5;
+    }
+
+    .login-step { animation: fade-in .35s ease; }
+    .login-step.hidden { display: none; }
+
+    .login-label {
+      font-size: 12px; font-weight: 600; color: var(--text-2);
+      text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px;
+    }
+    .login-input {
+      width: 100%; padding: 13px 16px;
+      background: var(--bg-input); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text-1); font-family: inherit; font-size: 15px;
+      outline: none; transition: border-color .2s, box-shadow .2s;
+      margin-bottom: 12px;
+    }
+    .login-input:focus {
+      border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .otp-inputs {
+      display: flex; gap: 8px; justify-content: center; margin-bottom: 16px;
+    }
+    .otp-digit {
+      width: 48px; height: 56px; text-align: center; font-size: 22px; font-weight: 700;
+      background: var(--bg-input); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text-1); font-family: inherit;
+      outline: none; transition: border-color .2s, box-shadow .2s;
+      caret-color: var(--accent);
+    }
+    .otp-digit:focus {
+      border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .otp-digit.filled { border-color: var(--accent-2); background: rgba(167,139,250,0.1); }
+
+    .login-btn {
+      width: 100%; padding: 14px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border: none; border-radius: 12px; color: #fff;
+      font-family: inherit; font-size: 15px; font-weight: 600;
+      cursor: pointer; transition: opacity .2s, transform .1s;
+      box-shadow: 0 4px 20px rgba(99,130,255,0.35);
+    }
+    .login-btn:hover { opacity: .9; transform: translateY(-1px); }
+    .login-btn:active { transform: translateY(0); }
+    .login-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+    .login-back {
+      background: transparent; border: none; color: var(--text-2);
+      font-family: inherit; font-size: 13px; cursor: pointer;
+      margin-top: 12px; width: 100%; padding: 6px;
+      border-radius: 8px; transition: color .2s;
+    }
+    .login-back:hover { color: var(--accent); }
+
+    .login-msg {
+      text-align: center; font-size: 13px; min-height: 20px;
+      margin-bottom: 12px; border-radius: 8px; padding: 0;
+      transition: all .3s;
+    }
+    .login-msg.error   { color: #f87171; }
+    .login-msg.success { color: var(--success); }
+    .login-msg.info    { color: var(--accent); }
+
+    .masked-email {
+      color: var(--accent-2); font-weight: 600;
+    }
+
+    .timer-text {
+      text-align: center; font-size: 12px; color: var(--text-3);
+      margin-top: 6px;
+    }
+
+    /* Logout btn di header */
+    .btn-logout {
+      background: transparent; border: 1px solid rgba(248,113,113,0.3);
+      color: #f87171; font-size: 12px; font-family: inherit;
+      padding: 6px 14px; border-radius: 20px; cursor: pointer;
+      transition: all .2s; white-space: nowrap;
+    }
+    .btn-logout:hover { border-color: #f87171; background: rgba(248,113,113,0.08); }
+
   </style>
 </head>
 <body>
+
+  <!-- ── Login Overlay ──────────────────────────────── -->
+  <div id="login-overlay">
+    <div class="login-card">
+      <div class="login-logo">🌟</div>
+      <h2 class="login-title"><span>APRIS</span></h2>
+      <p class="login-sub">Asisten Pribadi Cerdas<br>Masuk dengan email terdaftar Anda</p>
+
+      <!-- Step 1: Input Email -->
+      <div class="login-step" id="step-email">
+        <div class="login-label">Alamat Email</div>
+        <input
+          class="login-input" id="login-email-input" type="email"
+          placeholder="nama@gmail.com"
+          onkeydown="if(event.key==='Enter') requestOTP()"
+        />
+        <div class="login-msg" id="email-msg"></div>
+        <button class="login-btn" id="otp-request-btn" onclick="requestOTP()">Kirim Kode OTP →</button>
+      </div>
+
+      <!-- Step 2: Input OTP -->
+      <div class="login-step hidden" id="step-otp">
+        <div class="login-label" style="text-align:center">Kode dikirim ke <span class="masked-email" id="otp-target-display"></span></div>
+        <div class="otp-inputs">
+          <input class="otp-digit" id="d0" maxlength="1" type="text" inputmode="numeric" pattern="[0-9]" onkeydown="otpKey(event,0)" oninput="otpInput(event,0)">
+          <input class="otp-digit" id="d1" maxlength="1" type="text" inputmode="numeric" pattern="[0-9]" onkeydown="otpKey(event,1)" oninput="otpInput(event,1)">
+          <input class="otp-digit" id="d2" maxlength="1" type="text" inputmode="numeric" pattern="[0-9]" onkeydown="otpKey(event,2)" oninput="otpInput(event,2)">
+          <input class="otp-digit" id="d3" maxlength="1" type="text" inputmode="numeric" pattern="[0-9]" onkeydown="otpKey(event,3)" oninput="otpInput(event,3)">
+          <input class="otp-digit" id="d4" maxlength="1" type="text" inputmode="numeric" pattern="[0-9]" onkeydown="otpKey(event,4)" oninput="otpInput(event,4)">
+          <input class="otp-digit" id="d5" maxlength="1" type="text" inputmode="numeric" pattern="[0-9]" onkeydown="otpKey(event,5)" oninput="otpInput(event,5)">
+        </div>
+        <div class="login-msg" id="otp-msg"></div>
+        <button class="login-btn" id="otp-verify-btn" onclick="verifyOTP()" disabled>Verifikasi</button>
+        <button class="login-back" onclick="backToEmail()">← Ganti email</button>
+        <div class="timer-text" id="otp-timer"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- Alarm Overlay -->
   <div id="alarm-overlay">
@@ -324,6 +477,8 @@
       <p>Asisten Pribadi Cerdas • Gemini AI</p>
     </div>
     <div class="status-dot" id="status-dot" title="Online"></div>
+    <span id="logged-in-email" style="font-size:12px;color:var(--text-2);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+    <button class="btn-logout" id="logout-btn" onclick="logout()" style="display:none;">Keluar</button>
     <button class="btn-clear" onclick="clearChat()">Hapus Riwayat</button>
   </header>
 
@@ -389,6 +544,214 @@
     : `${location.protocol}//${location.host}`;
   const sessionId = "session_" + Date.now();
   let isTyping = false;
+
+  // ── Auth State ────────────────────────────────────
+  let authToken = localStorage.getItem("apris_token") || "";
+  let authEmail = localStorage.getItem("apris_email") || "";
+  let _otpEmail = "";
+  let _otpTimer = null;
+
+  // ── Login Screen Control ─────────────────────────
+  function showLoginScreen() {
+    document.getElementById("login-overlay").classList.remove("hidden");
+    document.getElementById("logout-btn").style.display = "none";
+    document.getElementById("logged-in-email").textContent = "";
+  }
+
+  function hideLoginScreen() {
+    document.getElementById("login-overlay").classList.add("hidden");
+    document.getElementById("logout-btn").style.display = "";
+    document.getElementById("logged-in-email").textContent = authEmail;
+  }
+
+  async function checkAuth() {
+    if (!authToken) { showLoginScreen(); return; }
+    try {
+      const res  = await fetch(`${API}/auth/status`, {
+        headers: { "X-Auth-Token": authToken }
+      });
+      const data = await res.json();
+      if (data.authenticated) {
+        authEmail = data.email || authEmail;
+        localStorage.setItem("apris_email", authEmail);
+        hideLoginScreen();
+      } else {
+        localStorage.removeItem("apris_token");
+        localStorage.removeItem("apris_email");
+        authToken = ""; authEmail = "";
+        showLoginScreen();
+      }
+    } catch {
+      // Jika server tidak bisa dijangkau, tetap tampilkan login
+      showLoginScreen();
+    }
+  }
+
+  // ── Request OTP ──────────────────────────────────
+  async function requestOTP() {
+    const emailInput = document.getElementById("login-email-input");
+    const email      = emailInput.value.trim().toLowerCase();
+    const msg        = document.getElementById("email-msg");
+    const btn        = document.getElementById("otp-request-btn");
+
+    if (!email || !email.includes("@")) {
+      setLoginMsg("email-msg", "Masukkan alamat email yang valid.", "error"); return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Mengirim...";
+    setLoginMsg("email-msg", "", "");
+
+    try {
+      const res  = await fetch(`${API}/auth/request-otp`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ email }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        _otpEmail = email;
+        document.getElementById("otp-target-display").textContent = data.masked_email || email;
+        document.getElementById("step-email").classList.add("hidden");
+        document.getElementById("step-otp").classList.remove("hidden");
+        document.getElementById("d0").focus();
+        setLoginMsg("otp-msg", "Kode OTP dikirim ke email kamu.", "success");
+        startOTPTimer(300);
+      } else {
+        setLoginMsg("email-msg", data.message || "Gagal mengirim OTP.", "error");
+      }
+    } catch {
+      setLoginMsg("email-msg", "Tidak dapat terhubung ke server.", "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Kirim Kode OTP →";
+    }
+  }
+
+  // ── OTP digit inputs ─────────────────────────────
+  function otpInput(e, idx) {
+    const val = e.target.value.replace(/\D/g, "");
+    e.target.value = val;
+    e.target.classList.toggle("filled", val !== "");
+    if (val && idx < 5) document.getElementById(`d${idx+1}`).focus();
+    checkOTPComplete();
+  }
+
+  function otpKey(e, idx) {
+    if (e.key === "Backspace" && !e.target.value && idx > 0) {
+      document.getElementById(`d${idx-1}`).focus();
+    }
+    if (e.key === "Enter") verifyOTP();
+  }
+
+  function getOTPValue() {
+    return [0,1,2,3,4,5].map(i => document.getElementById(`d${i}`).value).join("");
+  }
+
+  function checkOTPComplete() {
+    const complete = getOTPValue().length === 6;
+    document.getElementById("otp-verify-btn").disabled = !complete;
+    if (complete) document.getElementById("otp-verify-btn").focus();
+  }
+
+  function startOTPTimer(seconds) {
+    clearInterval(_otpTimer);
+    const el = document.getElementById("otp-timer");
+    let remaining = seconds;
+    el.textContent = `Kode berlaku ${remaining}s`;
+    _otpTimer = setInterval(() => {
+      remaining--;
+      if (remaining > 0) {
+        el.textContent = `Kode berlaku ${remaining}s`;
+      } else {
+        clearInterval(_otpTimer);
+        el.textContent = "Kode kedaluwarsa. Klik 'Ganti email' lalu coba lagi.";
+        document.getElementById("otp-verify-btn").disabled = true;
+      }
+    }, 1000);
+  }
+
+  function backToEmail() {
+    clearInterval(_otpTimer);
+    document.getElementById("step-otp").classList.add("hidden");
+    document.getElementById("step-email").classList.remove("hidden");
+    [0,1,2,3,4,5].forEach(i => {
+      const d = document.getElementById(`d${i}`);
+      d.value = ""; d.classList.remove("filled");
+    });
+    setLoginMsg("otp-msg", "", "");
+    setLoginMsg("email-msg", "", "");
+    document.getElementById("otp-timer").textContent = "";
+    document.getElementById("login-email-input").focus();
+  }
+
+  // ── Verify OTP ───────────────────────────────────
+  async function verifyOTP() {
+    const otp = getOTPValue();
+    const btn = document.getElementById("otp-verify-btn");
+    if (otp.length !== 6) return;
+
+    btn.disabled = true;
+    btn.textContent = "Memverifikasi...";
+    setLoginMsg("otp-msg", "", "");
+
+    try {
+      const res  = await fetch(`${API}/auth/verify-otp`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ email: _otpEmail, otp }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        clearInterval(_otpTimer);
+        authToken = data.auth_token;
+        authEmail = data.email || _otpEmail;
+        localStorage.setItem("apris_token", authToken);
+        localStorage.setItem("apris_email", authEmail);
+        setLoginMsg("otp-msg", "✅ " + data.message, "success");
+        setTimeout(() => hideLoginScreen(), 800);
+      } else {
+        setLoginMsg("otp-msg", "❌ " + (data.message || "Kode salah."), "error");
+        // Kosongkan digit
+        [0,1,2,3,4,5].forEach(i => {
+          const d = document.getElementById(`d${i}`);
+          d.value = ""; d.classList.remove("filled");
+        });
+        document.getElementById("d0").focus();
+        checkOTPComplete();
+      }
+    } catch {
+      setLoginMsg("otp-msg", "Tidak dapat terhubung ke server.", "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Verifikasi";
+    }
+  }
+
+  // ── Logout ────────────────────────────────────────
+  async function logout() {
+    if (!confirm("Keluar dari APRIS?")) return;
+    try {
+      await fetch(`${API}/auth/logout`, {
+        method:  "POST",
+        headers: { "X-Auth-Token": authToken },
+      });
+    } catch {}
+    authToken = ""; authEmail = "";
+    localStorage.removeItem("apris_token");
+    localStorage.removeItem("apris_email");
+    backToEmail();
+    showLoginScreen();
+  }
+
+  // ── Login message helper ──────────────────────────
+  function setLoginMsg(id, text, type) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = "login-msg" + (type ? " " + type : "");
+  }
 
   // ── Auto-resize textarea ─────────────────────────
   function autoResize(el) {
@@ -574,11 +937,24 @@
     try {
       const res = await fetch(`${API}/chat`, {
         method : "POST",
-        headers: {"Content-Type":"application/json"},
+        headers: {
+          "Content-Type": "application/json",
+          "X-Auth-Token" : authToken,
+        },
         body   : JSON.stringify(payload),
       });
       const data = await res.json();
       hideTyping();
+
+      if (res.status === 401) {
+        // Token expired / invalid → paksa login ulang
+        authToken = ""; authEmail = "";
+        localStorage.removeItem("apris_token");
+        localStorage.removeItem("apris_email");
+        showLoginScreen();
+        showToast("Sesi berakhir. Silakan login ulang.");
+        return;
+      }
 
       if (data.error) { 
         showToast("Error: " + data.error); 
@@ -1002,6 +1378,7 @@
   }
 
   // Init
+  checkAuth();
   checkStatus();
   fetchBriefing();
   fetchMeds();
