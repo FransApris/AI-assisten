@@ -722,8 +722,10 @@ def _process_green_api(data):
     user_msg = ""
     media_data = {}
     
-    if msg_type == "textMessage" or msg_type == "extendedTextMessage":
+    if msg_type == "textMessage":
         user_msg = msg_data.get("textMessageData", {}).get("textMessage", "")
+    elif msg_type == "extendedTextMessage":
+        user_msg = msg_data.get("extendedTextMessageData", {}).get("text", "")
     elif msg_type in ["imageMessage", "documentMessage", "audioMessage", "videoMessage"]:
         # Ekstrak caption/text
         user_msg = msg_data.get("fileMessageData", {}).get("caption", "")
