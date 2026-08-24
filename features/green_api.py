@@ -12,7 +12,7 @@ import requests
 
 GREEN_API_ID = os.getenv("GREEN_API_ID", "")
 GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN", "")
-GREEN_API_HOST = "https://api.green-api.com"
+GREEN_API_HOST = f"https://{GREEN_API_ID[:4]}.api.greenapi.com" if GREEN_API_ID else "https://api.green-api.com"
 
 
 def send_message(chat_id: str, message: str) -> dict:
