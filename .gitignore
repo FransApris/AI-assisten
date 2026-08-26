@@ -18,4 +18,5 @@ node_modules/
 
 # Temp files
 *.txt
+!system_prompt.txt
 rag-knowledge/
