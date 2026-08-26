@@ -783,18 +783,33 @@
   async function _processQueue() {
     if (_queueProcessing || _msgQueue.length === 0) return;
     _queueProcessing = true;
-    while (_msgQueue.length > 0) {
-      const next = _msgQueue.shift();
-      document.getElementById("msg-input").value = next.text;
-      // Tempel file jika ada
-      if (next.file) {
-        currentFileBase64 = next.file.base64;
-        currentFileName   = next.file.name;
-        currentFileMime   = next.file.mime;
+    try {
+      while (_msgQueue.length > 0) {
+        const next = _msgQueue.shift();
+        document.getElementById("msg-input").value = next.text || "";
+        // Tempel file jika ada
+        if (next.file) {
+          currentFileBase64 = next.file.base64;
+          currentFileName   = next.file.name;
+          currentFileMime   = next.file.mime;
+        }
+        try {
+          await sendMessage();  // tunggu sampai selesai baru proses berikutnya
+        } catch (itemErr) {
+          // Satu item gagal → lanjut item berikutnya, tidak stuck
+          console.warn("[Queue] Item gagal diproses:", itemErr);
+          isTyping = false;   // pastikan flag reset
+          document.getElementById("send-btn").disabled = false;
+          document.getElementById("send-btn").textContent = "➤";
+        }
       }
-      await sendMessage();  // tunggu sampai selesai baru proses berikutnya
+    } finally {
+      _queueProcessing = false;  // selalu reset meski terjadi error tak terduga
+      if (_msgQueue.length > 0) {
+        // Ada sisa antrian yang masuk saat proses — jalankan lagi
+        setTimeout(_processQueue, 100);
+      }
     }
-    _queueProcessing = false;
   }
 
   // ── Quick send buttons ───────────────────────────

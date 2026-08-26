@@ -834,6 +834,14 @@ def _process_green_api(data):
     if not user_msg and not media_data:
         return
 
+    # ✅ Acknowledgment segera: beri tahu user pesan diterima & sedang diproses
+    # Ini mencegah user kirim ulang karena mengira pesan tidak masuk
+    try:
+        ack = "⏳ _Pesan diterima. APRIS sedang memproses..._"
+        green_api.send_message(chat_id, ack)
+    except Exception:
+        pass   # Jangan sampai gagal ack membatalkan proses utama
+
     # 2. Siapkan payload untuk endpoint /chat internal kita
     payload = {
         "message": user_msg or "[Kirim Media]",
@@ -902,8 +910,21 @@ def _process_green_api(data):
             f"Silakan coba kirim ulang pesan Anda."
         )
 
-    # 4. Kirim balasan ke WhatsApp via Green-API
-    green_api.send_message(chat_id, reply_text)
+    # 4. Kirim balasan ke WhatsApp via Green-API (dengan retry 1x jika gagal)
+    if not reply_text:
+        reply_text = "Maaf, APRIS tidak dapat memproses pesan ini saat ini."
+    try:
+        green_api.send_message(chat_id, reply_text)
+    except Exception as send_err:
+        print(f"[WhatsApp] Gagal kirim balasan (attempt 1): {send_err}", flush=True)
+        # Retry sekali setelah 3 detik
+        import time
+        time.sleep(3)
+        try:
+            green_api.send_message(chat_id, reply_text)
+            print(f"[WhatsApp] Retry kirim balasan: berhasil", flush=True)
+        except Exception as send_err2:
+            print(f"[WhatsApp] Retry gagal juga: {send_err2}", flush=True)
 
 
 
