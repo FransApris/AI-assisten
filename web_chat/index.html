@@ -410,6 +410,15 @@
     }
     .btn-logout:hover { border-color: #f87171; background: rgba(248,113,113,0.08); }
 
+    /* ── Tombol kirim: animasi loading ─────────────── */
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .spin-icon {
+      animation: spin 0.8s linear infinite;
+      display: block;
+    }
+
   </style>
 </head>
 <body>
@@ -767,8 +776,35 @@
     }
   }
 
+  // ── Message Queue (untuk pertanyaan beruntun) ─────
+  const _msgQueue = [];        // antrian pesan yang masuk saat sedang proses
+  let   _queueProcessing = false;
+
+  async function _processQueue() {
+    if (_queueProcessing || _msgQueue.length === 0) return;
+    _queueProcessing = true;
+    while (_msgQueue.length > 0) {
+      const next = _msgQueue.shift();
+      document.getElementById("msg-input").value = next.text;
+      // Tempel file jika ada
+      if (next.file) {
+        currentFileBase64 = next.file.base64;
+        currentFileName   = next.file.name;
+        currentFileMime   = next.file.mime;
+      }
+      await sendMessage();  // tunggu sampai selesai baru proses berikutnya
+    }
+    _queueProcessing = false;
+  }
+
   // ── Quick send buttons ───────────────────────────
   function quickSend(text) {
+    if (isTyping) {
+      // Antri pesan, jangan kirim paralel
+      _msgQueue.push({ text });
+      showToast(`⏳ Pesan "${text.substring(0,30)}..." masuk antrian.`);
+      return;
+    }
     document.getElementById("msg-input").value = text;
     sendMessage();
   }
@@ -932,6 +968,10 @@
     }
 
     isTyping = true; btn.disabled = true;
+    // Visual: ubah tombol kirim jadi indikator loading
+    btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" class="spin-icon">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
     showTyping();
 
     try {
@@ -956,11 +996,16 @@
         return;
       }
 
-      if (data.error) { 
-        showToast("Error: " + data.error); 
+      if (data.error) {
+        // Tampilkan retry_after jika rate limit
+        if (data.code === 429) {
+          showToast(`⏱️ Rate limit. Tunggu ${data.retry_after || 60}s, pesan berikutnya dalam antrian.`);
+        } else {
+          showToast("Error: " + data.error);
+        }
       }
-      else { 
-        appendMsg("apris", data.reply, data.time || now); 
+      else {
+        appendMsg("apris", data.reply, data.time || now);
         speakText(data.reply);
       }
 
@@ -968,8 +1013,12 @@
       hideTyping();
       showToast("Tidak dapat terhubung ke server APRIS. Pastikan chat_server.py berjalan.");
     } finally {
-      isTyping = false; btn.disabled = false;
+      isTyping = false;
+      btn.disabled = false;
+      btn.textContent = "➤";   // Kembalikan ke icon asli
       input.focus();
+      // Proses antrian jika ada
+      if (_msgQueue.length > 0) _processQueue();
     }
   }
 
@@ -1046,7 +1095,14 @@
       const input = document.getElementById("msg-input");
       if (finalTranscript) {
         input.value = finalTranscript;
-        sendMessage();
+        if (isTyping) {
+          // Sedang proses — masukkan ke antrian
+          _msgQueue.push({ text: finalTranscript });
+          showToast(`⏳ Pesan suara masuk antrian.`);
+          input.value = "";
+        } else {
+          sendMessage();
+        }
       } else {
         input.value = interimTranscript;
       }

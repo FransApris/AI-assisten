@@ -145,6 +145,7 @@ _genai_client  = None
 _chroma_col    = None           # ChromaDB collection (lazy load)
 _chat_sessions = {}             # session_id → {"messages": list, "last_access": datetime}
 _sessions_lock = threading.Lock()
+_session_locks = {}             # session_id → Lock (cegah race condition per sesi)
 _sse_clients   = []             # list of SSE queue untuk /events stream
 _sse_lock      = threading.Lock()
 _scheduler     = None           # APScheduler instance (lazy init)
@@ -267,6 +268,18 @@ def get_or_create_session(session_id: str) -> list:
         else:
             _chat_sessions[session_id]["last_access"] = now
         return _chat_sessions[session_id]["messages"]
+
+
+def _get_session_lock(session_id: str) -> threading.Lock:
+    """
+    Kembalikan Lock khusus untuk session_id ini.
+    Mencegah race condition saat dua request bersamaan masuk ke sesi yang sama
+    (misalnya dari WhatsApp dan Web Chat secara simultan).
+    """
+    with _sessions_lock:
+        if session_id not in _session_locks:
+            _session_locks[session_id] = threading.Lock()
+        return _session_locks[session_id]
 
 
 def _summarize_history(history: list, client) -> list:
@@ -800,9 +813,17 @@ def chat():
     if not GEMINI_API_KEY:
         return jsonify({"error": "GEMINI_API_KEY belum dikonfigurasi."}), 500
 
-    history = get_or_create_session(session_id)
+    # Per-session lock: cegah race condition jika dua request masuk bersamaan
+    session_lock = _get_session_lock(session_id)
+    if not session_lock.acquire(blocking=True, timeout=30):
+        return jsonify({
+            "error": "Server sedang memproses permintaan sebelumnya untuk sesi ini. Silakan tunggu.",
+            "code": 429,
+        }), 429
 
     try:
+        history = get_or_create_session(session_id)
+
         from google import genai
         from google.genai import types
 
@@ -1254,6 +1275,9 @@ def chat():
                 "code"      : 429,
             }), 429
         return jsonify({"error": err_str}), 500
+    finally:
+        # Selalu bebaskan per-session lock
+        session_lock.release()
 
 
 @app.route("/history")
