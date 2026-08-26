@@ -939,7 +939,14 @@
     const btn   = document.getElementById("send-btn");
     const text  = input.value.trim();
     if (!text && !currentFileBase64) return;
-    if (isTyping) return;
+    // Jika APRIS sedang mengetik — antri pesan, jangan abaikan diam-diam
+    if (isTyping) {
+      _msgQueue.push({ text, file: currentFileBase64 ? { base64: currentFileBase64, name: currentFileName, mime: currentFileMime } : null });
+      showToast(`⏳ Pesan masuk antrian (${_msgQueue.length} menunggu).`);
+      input.value = ""; input.style.height = "auto";
+      if (currentFileBase64) clearFile();
+      return;
+    }
 
     const now = new Date().toLocaleTimeString("id-ID", {hour:"2-digit",minute:"2-digit"});
     let displayHtml = text;
