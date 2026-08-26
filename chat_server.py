@@ -765,13 +765,59 @@ def _process_green_api(data):
             timeout=120
         )
         res_data = res.json()
-        reply_text = res_data.get("reply", "Maaf, terjadi kesalahan saat memproses pesan.")
+
+        # Tangani error spesifik dari /chat dan beri notifikasi WA yang jelas
+        if res.status_code == 429:
+            # Rate limit Gemini atau server sedang sibuk
+            retry = res_data.get("retry_after", 60)
+            reply_text = (
+                f"⏱️ *APRIS sedang kelebihan beban.*\n\n"
+                f"Terlalu banyak permintaan dalam waktu bersamaan. "
+                f"Silakan kirim ulang pesan dalam *{retry} detik*.\n\n"
+                f"_Pesan Anda: \"{user_msg[:80]}{'...' if len(user_msg)>80 else ''}\"_"
+            )
+        elif res.status_code == 500:
+            err = res_data.get("error", "Unknown error")
+            reply_text = (
+                f"❌ *APRIS mengalami kendala internal.*\n\n"
+                f"Detail: _{err[:200]}_\n\n"
+                f"Coba kirim ulang pesan Anda. Jika terus berulang, hubungi admin."
+            )
+        elif res.status_code == 413:
+            reply_text = (
+                f"📦 *File terlalu besar.*\n\n"
+                f"Batas ukuran file adalah {os.getenv('MAX_FILE_BYTES', 10*1024*1024) // (1024*1024)} MB. "
+                f"Silakan kirim file yang lebih kecil."
+            )
+        else:
+            reply_text = res_data.get("reply", "Maaf, terjadi kesalahan saat memproses pesan.")
+
+    except requests.exceptions.Timeout:
+        print(f"[WhatsApp] Timeout menunggu /chat setelah 120s")
+        reply_text = (
+            f"⏳ *APRIS membutuhkan waktu terlalu lama.*\n\n"
+            f"Permintaan Anda diproses lebih dari 2 menit. "
+            f"Kemungkinan pertanyaan sangat kompleks atau koneksi lambat.\n\n"
+            f"Silakan coba lagi dengan pertanyaan yang lebih singkat."
+        )
+    except requests.exceptions.ConnectionError:
+        print(f"[WhatsApp] Tidak bisa konek ke /chat — server down?")
+        reply_text = (
+            f"🔌 *APRIS tidak merespons.*\n\n"
+            f"Server sedang dalam proses restart atau mengalami gangguan. "
+            f"Silakan coba lagi dalam 1–2 menit."
+        )
     except Exception as e:
         print(f"[WhatsApp] Internal request failed: {e}")
-        reply_text = "Maaf, server sedang sibuk atau mengalami gangguan."
+        reply_text = (
+            f"⚠️ *Terjadi kesalahan tak terduga.*\n\n"
+            f"_{str(e)[:150]}_\n\n"
+            f"Silakan coba kirim ulang pesan Anda."
+        )
 
     # 4. Kirim balasan ke WhatsApp via Green-API
     green_api.send_message(chat_id, reply_text)
+
 
 
 @app.route("/whatsapp", methods=["POST"])
