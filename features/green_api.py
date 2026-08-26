@@ -10,9 +10,11 @@ import base64
 import mimetypes
 import requests
 
-GREEN_API_ID = os.getenv("GREEN_API_ID", "")
+GREEN_API_ID    = os.getenv("GREEN_API_ID", "")
 GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN", "")
-GREEN_API_HOST = f"https://{GREEN_API_ID[:4]}.api.greenapi.com" if GREEN_API_ID else "https://api.green-api.com"
+# Prefix host: ambil 4 karakter pertama jika tersedia, fallback ke default
+_id_prefix = GREEN_API_ID[:4] if len(GREEN_API_ID) >= 4 else ""
+GREEN_API_HOST = f"https://{_id_prefix}.api.greenapi.com" if _id_prefix else "https://api.green-api.com"
 
 
 def send_message(chat_id: str, message: str) -> dict:

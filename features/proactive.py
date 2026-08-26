@@ -4,7 +4,6 @@ features/proactive.py — Proactive Agent APRIS
 Scheduler jobs yang membuat APRIS bertindak proaktif:
   1. Reminder kalender H-60 menit sebelum event
   2. Reminder obat yang belum diminum (cek setiap 30 menit)
-  3. Generate daily brief pagi hari
 
 Semua notifikasi dikirim via SSE ke browser.
 """

@@ -122,7 +122,7 @@
       filter: drop-shadow(0 0 20px rgba(99,130,255,0.5));
     }
     .welcome h2 { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
-    .welcome h2 span { background: var(--user-bg); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .welcome h2 span { background: var(--user-bg); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
     .welcome p { font-size: 14px; color: var(--text-2); max-width: 360px; line-height: 1.6; }
 
     .quick-actions {
@@ -324,7 +324,7 @@
       text-align: center; font-size: 22px; font-weight: 700;
       letter-spacing: -0.5px; margin-bottom: 4px;
     }
-    .login-title span { background: var(--user-bg); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .login-title span { background: var(--user-bg); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
     .login-sub {
       text-align: center; font-size: 13px; color: var(--text-2);
       margin-bottom: 28px; line-height: 1.5;
@@ -1201,24 +1201,6 @@
     window.speechSynthesis.speak(msg);
   }
 
-  async function fetchBriefing() {
-    try {
-      const res = await fetch(`${API}/briefing`);
-      const data = await res.json();
-      if (data.briefing) {
-        const now = new Date().toLocaleTimeString("id-ID", {hour:"2-digit",minute:"2-digit"});
-        // Cek jika belum ada pesan (selain welcome screen)
-        const area = document.getElementById("chat-area");
-        if (area.querySelectorAll('.msg-row').length === 0) {
-          // Hapus welcome screen agar briefing masuk dengan rapi
-          area.innerHTML = '';
-          appendMsg("apris", data.briefing, now);
-        }
-      }
-    } catch (e) {
-      console.log("Briefing failed to load");
-    }
-  }
 
   // ── Medical Tracker ───────────────────────────────
   let medsData = [];
@@ -1380,7 +1362,6 @@
   // Init
   checkAuth();
   checkStatus();
-  fetchBriefing();
   fetchMeds();
   setInterval(checkStatus, 30000);
   setInterval(fetchMeds, 60000);

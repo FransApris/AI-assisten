@@ -33,6 +33,16 @@ _EMB_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001"
 _API_KEY     = os.getenv("GEMINI_API_KEY", "")
 _lock        = threading.Lock()
 _col         = None
+_genai_client = None   # Cached Gemini client
+
+
+def _get_genai_client():
+    """Lazy-init Gemini client (cached, bukan buat baru setiap kali)."""
+    global _genai_client
+    if _genai_client is None:
+        from google import genai
+        _genai_client = genai.Client(api_key=_API_KEY)
+    return _genai_client
 
 
 def _get_collection():
@@ -53,9 +63,8 @@ def _get_collection():
 
 
 def _embed(text: str) -> list:
-    """Buat embedding untuk teks."""
-    from google import genai
-    client = genai.Client(api_key=_API_KEY)
+    """Buat embedding untuk teks menggunakan cached client."""
+    client = _get_genai_client()
     result = client.models.embed_content(
         model=_EMB_MODEL,
         contents=text

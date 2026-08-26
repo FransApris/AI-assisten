@@ -13,6 +13,7 @@ Fitur:
 """
 
 import random
+import secrets
 import string
 import time
 import sys
@@ -43,8 +44,8 @@ _otp_store: dict = {}
 # ---------------------------------------------------------------------------
 
 def _generate_otp(length: int = OTP_LENGTH) -> str:
-    """Generate kode OTP numerik acak."""
-    return "".join(random.choices(string.digits, k=length))
+    """Generate kode OTP numerik acak menggunakan sumber kriptografis aman."""
+    return "".join(secrets.choice(string.digits) for _ in range(length))
 
 
 def _cleanup_expired():

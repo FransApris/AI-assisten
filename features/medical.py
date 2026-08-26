@@ -1,7 +1,15 @@
 import json
 import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+import os
+
+try:
+    from zoneinfo import ZoneInfo
+    _TZ = ZoneInfo(os.getenv("TZ", "Asia/Jakarta"))
+except Exception:
+    from datetime import timezone
+    _TZ = timezone(timedelta(hours=7))
 
 # Path file database obat
 MED_FILE = Path(__file__).parent.parent / "medications.json"
@@ -70,7 +78,7 @@ def get_all_meds() -> list:
 
 def mark_taken(name: str, time: str) -> bool:
     """Menandai obat sudah diminum hari ini."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(_TZ).strftime("%Y-%m-%d")
     with _lock:
         meds = _load_meds()
         for m in meds:
@@ -87,7 +95,7 @@ def get_meds_summary() -> str:
     if not meds:
         return ""
 
-    today   = datetime.now().strftime("%Y-%m-%d")
+    today   = datetime.now(_TZ).strftime("%Y-%m-%d")
     summary = "Jadwal Obat Harian Pengguna:\n"
     for m in meds:
         status   = "Sudah diminum" if m.get('last_taken') == today else "Belum diminum"

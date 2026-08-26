@@ -352,14 +352,7 @@ def _init_schedulers():
     if sched is None:
         return
 
-    # 1. Daily Brief setiap 07:00 WIB
-    try:
-        from features.daily_brief import schedule_daily_brief
-        schedule_daily_brief(sched)
-    except Exception as e:
-        print(f"[Scheduler] Daily brief error: {e}")
-
-    # 2. Auto-ingest Google Drive setiap 6 jam
+    # 1. Auto-ingest Google Drive setiap 6 jam
     try:
         from apscheduler.triggers.interval import IntervalTrigger
         def _run_drive_ingest():
@@ -405,15 +398,6 @@ except Exception as _sched_err:
 def index():
     return send_from_directory("web_chat", "index.html")
 
-@app.route("/briefing")
-def briefing():
-    """Ambil daily briefing — dari cache jika sudah ada, generate jika belum."""
-    try:
-        from features.daily_brief import get_cached_brief
-        data = get_cached_brief()
-        return jsonify({"briefing": data["content"], "generated_at": data["generated_at"]})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/events")
@@ -527,9 +511,11 @@ def get_meds():
 @app.route("/meds/take", methods=["POST"])
 def take_meds():
     try:
-        data = request.get_json()
-        name = data.get("name")
-        time = data.get("time")
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        time = (data.get("time") or "").strip()
+        if not name or not time:
+            return jsonify({"error": "'name' dan 'time' wajib diisi."}), 400
         from features import medical
         res = medical.mark_taken(name, time)
         return jsonify({"success": res})
@@ -696,7 +682,9 @@ def auth_status():
     email, err = _require_auth()
     if err:
         return jsonify({"authenticated": False}), 200
-    return jsonify({"authenticated": True, "email": email})
+    # Jangan kembalikan "anonymous" sebagai email nyata
+    safe_email = email if email and email != "anonymous" else None
+    return jsonify({"authenticated": True, "email": safe_email})
 
 
 # ---------------------------------------------------------------------------
@@ -1288,32 +1276,6 @@ def clear():
     with _sessions_lock:
         _chat_sessions[session_id] = {"messages": [], "last_access": datetime.now(TZ)}
     return jsonify({"status": "cleared", "session_id": session_id})
-
-
-# ---------------------------------------------------------------------------
-# WhatsApp Gateway — Twilio Webhook
-# ---------------------------------------------------------------------------
-
-def _wa_send_message(to: str, body: str):
-    """
-    Kirim pesan WhatsApp via Twilio REST API.
-    Digunakan untuk notifikasi proaktif / pengiriman awal.
-    """
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        print("[WA] Twilio credentials belum dikonfigurasi.", flush=True)
-        return
-    try:
-        from twilio.rest import Client as TwilioClient
-        tc = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        tc.messages.create(
-            from_=TWILIO_WA_FROM,
-            to=f"whatsapp:{to}" if not to.startswith("whatsapp:") else to,
-            body=body,
-        )
-    except Exception as e:
-        print(f"[WA] Gagal kirim pesan: {e}", flush=True)
-
-
 
 
 def _run_action_interceptors(apris_reply: str) -> str:
