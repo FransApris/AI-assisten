@@ -151,6 +151,21 @@ _sse_lock      = threading.Lock()
 _scheduler     = None           # APScheduler instance (lazy init)
 
 # ---------------------------------------------------------------------------
+# WhatsApp Flood Detector — rate limit per nomor
+# ---------------------------------------------------------------------------
+# Konfigurasi via .env:
+#   WA_FLOOD_MAX_MSG=5      → maks pesan dalam satu window
+#   WA_FLOOD_WINDOW_SEC=60  → window waktu (detik)
+#   WA_FLOOD_COOLDOWN_SEC=180 → cooldown setelah flood terdeteksi (detik)
+WA_FLOOD_MAX_MSG     = int(os.getenv("WA_FLOOD_MAX_MSG",     5))
+WA_FLOOD_WINDOW_SEC  = int(os.getenv("WA_FLOOD_WINDOW_SEC",  60))
+WA_FLOOD_COOLDOWN_SEC= int(os.getenv("WA_FLOOD_COOLDOWN_SEC",180))
+
+# tracker: chat_id → {"timestamps": [float,...], "cooldown_until": float, "warned": bool}
+_wa_flood: dict = {}
+_wa_flood_lock  = threading.Lock()
+
+# ---------------------------------------------------------------------------
 # Auth — OTP token store
 # ---------------------------------------------------------------------------
 _auth_tokens      = {}               # token → {"email": str, "exp": float}
@@ -280,6 +295,71 @@ def _get_session_lock(session_id: str) -> threading.Lock:
         if session_id not in _session_locks:
             _session_locks[session_id] = threading.Lock()
         return _session_locks[session_id]
+
+
+def _wa_check_flood(chat_id: str) -> tuple[bool, str, int]:
+    """
+    Cek apakah nomor ini mengirim terlalu banyak pesan (flood).
+
+    Returns:
+        (is_flooded: bool, notif_msg: str, cooldown_remaining: int)
+        - is_flooded=True  → blokir pesan, kirim notif_msg ke WA
+        - is_flooded=False → lanjut proses normal
+    """
+    import time
+    now = time.time()
+
+    with _wa_flood_lock:
+        entry = _wa_flood.setdefault(chat_id, {
+            "timestamps"    : [],
+            "cooldown_until": 0.0,
+            "warned"        : False,
+        })
+
+        # 1. Cek apakah masih dalam cooldown
+        if now < entry["cooldown_until"]:
+            remaining = int(entry["cooldown_until"] - now)
+            # Hanya kirim notif sekali per cooldown (bukan setiap pesan)
+            if not entry["warned"]:
+                entry["warned"] = True
+                msg = (
+                    f"🛑 *APRIS perlu istirahat sejenak.*\n\n"
+                    f"Kamu mengirim terlalu banyak pesan dalam waktu singkat. "
+                    f"APRIS butuh waktu memproses satu per satu.\n\n"
+                    f"⏳ Silakan tunggu *{remaining} detik* lagi sebelum mengirim pesan berikutnya."
+                )
+                return True, msg, remaining
+            else:
+                # Sudah diperingatkan — blokir diam-diam saja
+                return True, "", remaining
+
+        # Cooldown sudah selesai — reset warned flag
+        entry["warned"] = False
+
+        # 2. Buang timestamp di luar window
+        cutoff = now - WA_FLOOD_WINDOW_SEC
+        entry["timestamps"] = [t for t in entry["timestamps"] if t > cutoff]
+
+        # 3. Catat timestamp pesan ini
+        entry["timestamps"].append(now)
+        count = len(entry["timestamps"])
+
+        # 4. Cek apakah melebihi batas
+        if count > WA_FLOOD_MAX_MSG:
+            entry["cooldown_until"] = now + WA_FLOOD_COOLDOWN_SEC
+            entry["warned"]         = True
+            cooldown_min = WA_FLOOD_COOLDOWN_SEC // 60
+            msg = (
+                f"🛑 *Terlalu banyak pesan! APRIS kewalahan.*\n\n"
+                f"Kamu telah mengirim *{count} pesan* dalam {WA_FLOOD_WINDOW_SEC} detik terakhir. "
+                f"Batas maksimal adalah *{WA_FLOOD_MAX_MSG} pesan* per {WA_FLOOD_WINDOW_SEC} detik.\n\n"
+                f"⏳ APRIS akan merespons kembali setelah *{cooldown_min} menit*.\n"
+                f"_Pesan-pesan selama cooldown tidak akan diproses._"
+            )
+            print(f"[FloodDetect] {chat_id} diblokir {WA_FLOOD_COOLDOWN_SEC}s ({count} pesan/{WA_FLOOD_WINDOW_SEC}s)", flush=True)
+            return True, msg, WA_FLOOD_COOLDOWN_SEC
+
+    return False, "", 0
 
 
 def _summarize_history(history: list, client) -> list:
@@ -716,7 +796,14 @@ def _process_green_api(data):
     chat_id = sender_data.get("chatId", "")
     if not chat_id:
         return
-        
+
+    # 🛡️ Flood guard: cek apakah nomor ini mengirim terlalu banyak pesan
+    is_flooded, flood_msg, _ = _wa_check_flood(chat_id)
+    if is_flooded:
+        if flood_msg:   # Kirim notif hanya sekali per cooldown
+            green_api.send_message(chat_id, flood_msg)
+        return          # Hentikan pemrosesan — jangan teruskan ke Gemini
+
     msg_data = data.get("messageData", {})
     msg_type = msg_data.get("typeMessage", "")
     
