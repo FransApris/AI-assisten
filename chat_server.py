@@ -1549,17 +1549,30 @@ def chat():
                         except ValueError:
                             apris_reply += f"\n\n❌ ID `{rid}` tidak ditemukan."
 
-                # SCHEDULE_MSG
+                # SCHEDULE_MSG — auto-resolve nama & normalisasi nomor
                 sched_matches = re.findall(
                     r'<SCHEDULE_MSG\s+to="([^"]+)"\s+at="([^"]+)"\s+message="([^"]+)"\s*/?>',
                     apris_reply
                 )
                 if sched_matches:
                     apris_reply = re.sub(r'<SCHEDULE_MSG[^>]*/?>', '', apris_reply).strip()
-                    for to_num, at_time, msg_text in sched_matches:
-                        # Normalkan at_time: ganti 'T' dengan ' '
-                        run_at = at_time.replace('T', ' ')[:16]  # "YYYY-MM-DD HH:MM"
-                        # Callback: kirim WA ke nomor tujuan
+                    from features import contacts as _ct
+                    for to_raw, at_time, msg_text in sched_matches:
+                        run_at = at_time.replace('T', ' ')[:16]
+                        # Cek apakah input adalah nomor atau nama
+                        digits_only = re.sub(r'\D', '', to_raw)
+                        if len(digits_only) >= 8:
+                            to_num        = _ct.normalize_wa_number(to_raw)
+                            contact_label = to_num
+                        else:
+                            to_num, disp  = _ct.resolve_contact_to_wa(to_raw)
+                            contact_label = f"{disp} ({to_num})" if to_num else to_raw
+                        if not to_num:
+                            apris_reply += (
+                                f"\n\n❌ Tidak dapat menemukan nomor WA untuk *{to_raw}*. "
+                                f"Pastikan kontak ada di Google Contacts atau berikan nomor lengkap."
+                            )
+                            continue
                         def _make_wa_callback(target_id):
                             def _cb(target, message):
                                 try: _sched_ga.send_message(target_id, message)
@@ -1567,11 +1580,9 @@ def chat():
                                     print(f"[ScheduleMsg] Gagal kirim ke {target_id}: {cb_e}")
                             return _cb
                         rem_mod.set_send_callback(_make_wa_callback(to_num))
-                        result = rem_mod.set_reminder(
-                            message=msg_text, target=to_num, run_at=run_at
-                        )
+                        result = rem_mod.set_reminder(message=msg_text, target=to_num, run_at=run_at)
                         apris_reply += (
-                            f"\n\n✅ Pesan dijadwalkan ke *{to_num}* pada *{run_at} WIB*."
+                            f"\n\n✅ Pesan dijadwalkan ke *{contact_label}* pada *{run_at} WIB*."
                             f"\nID: `{result['id']}`"
                         )
             except Exception as e:
@@ -1919,15 +1930,29 @@ def _run_action_interceptors(apris_reply: str) -> str:
                     except ValueError:
                         apris_reply += f"\n\n❌ ID `{rid}` tidak ditemukan."
 
-            # SCHEDULE_MSG
+            # SCHEDULE_MSG — auto-resolve nama & normalisasi nomor
             sched_matches = _re.findall(
                 r'<SCHEDULE_MSG\s+to="([^"]+)"\s+at="([^"]+)"\s+message="([^"]+)"\s*/?>',
                 apris_reply
             )
             if sched_matches:
                 apris_reply = _re.sub(r'<SCHEDULE_MSG[^>]*/?>', '', apris_reply).strip()
-                for to_num, at_time, msg_text in sched_matches:
-                    run_at = at_time.replace('T', ' ')[:16]  # "YYYY-MM-DD HH:MM"
+                from features import contacts as _ct
+                for to_raw, at_time, msg_text in sched_matches:
+                    run_at = at_time.replace('T', ' ')[:16]
+                    digits_only = _re.sub(r'\D', '', to_raw)
+                    if len(digits_only) >= 8:
+                        to_num        = _ct.normalize_wa_number(to_raw)
+                        contact_label = to_num
+                    else:
+                        to_num, disp  = _ct.resolve_contact_to_wa(to_raw)
+                        contact_label = f"{disp} ({to_num})" if to_num else to_raw
+                    if not to_num:
+                        apris_reply += (
+                            f"\n\n❌ Tidak dapat menemukan nomor WA untuk *{to_raw}*. "
+                            f"Pastikan kontak ada di Google Contacts atau berikan nomor lengkap."
+                        )
+                        continue
                     def _make_wa_callback(target_id):
                         def _cb(target, message):
                             try: _sched_ga.send_message(target_id, message)
@@ -1935,11 +1960,9 @@ def _run_action_interceptors(apris_reply: str) -> str:
                                 print(f"[ScheduleMsg] Gagal kirim ke {target_id}: {cb_e}")
                         return _cb
                     rem_mod.set_send_callback(_make_wa_callback(to_num))
-                    result = rem_mod.set_reminder(
-                        message=msg_text, target=to_num, run_at=run_at
-                    )
+                    result = rem_mod.set_reminder(message=msg_text, target=to_num, run_at=run_at)
                     apris_reply += (
-                        f"\n\n✅ Pesan dijadwalkan ke *{to_num}* pada *{run_at} WIB*."
+                        f"\n\n✅ Pesan dijadwalkan ke *{contact_label}* pada *{run_at} WIB*."
                         f"\nID: `{result['id']}`"
                     )
         except Exception as e:
