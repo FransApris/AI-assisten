@@ -61,6 +61,9 @@ def normalize_wa_number(raw: str) -> str:
     if raw.endswith("@c.us"):
         return raw
 
+    # Cek apakah input secara eksplisit menggunakan kode negara via '+'
+    has_plus = raw.strip().startswith("+")
+
     # Hapus semua karakter non-digit
     digits = re.sub(r"\D", "", raw)
 
@@ -68,17 +71,20 @@ def normalize_wa_number(raw: str) -> str:
         return ""
 
     # Normalisasi prefix
-    if digits.startswith("0"):
-        digits = "62" + digits[1:]       # 08xxx → 628xxx
-    elif digits.startswith("62"):
-        pass                              # sudah 62xxx
-    elif digits.startswith("8"):
-        digits = "62" + digits           # 8xxx → 628xxx
+    if has_plus:
+        pass  # Biarkan apa adanya (sudah kode negara yang benar)
     else:
-        digits = "62" + digits           # asumsi Indonesia
+        if digits.startswith("0"):
+            digits = "62" + digits[1:]       # 08xxx → 628xxx
+        elif digits.startswith("8"):
+            digits = "62" + digits           # 8xxx → 628xxx
+        elif digits.startswith("62"):
+            pass                             # sudah 62xxx
+        else:
+            pass                             # Format LN yang diketik tanpa + (misal 65xxxx)
 
-    # Validasi panjang minimal (min 10 digit setelah 62)
-    if len(digits) < 10:
+    # Validasi panjang minimal (min 8 digit)
+    if len(digits) < 8:
         return ""
 
     return f"{digits}@c.us"

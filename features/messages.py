@@ -29,12 +29,9 @@ WELCOME_MENU_TEXT = (
     "Ketik kebutuhan Anda langsung di bawah ini!"
 )
 
-# Mode welcome: 'id' | 'en' | 'menu' | 'off'
-WELCOME_MODE = os.getenv("WA_WELCOME_MODE", "id")
-
 def get_welcome_message() -> str:
     """Kembalikan pesan welcome sesuai konfigurasi WA_WELCOME_MODE."""
-    mode = WELCOME_MODE.lower()
+    mode = os.getenv("WA_WELCOME_MODE", "id").lower()
     if mode == "en":
         return WELCOME_EN_TEXT
     elif mode == "menu":

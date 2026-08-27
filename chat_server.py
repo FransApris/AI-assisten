@@ -955,14 +955,29 @@ def _process_green_api(data):
     if not user_msg and not media_data:
         return
 
-    # 🔍 Reverse lookup — cari nama pengirim di Google Contacts (background, cached)
+    # 🔍 Reverse lookup — cari nama pengirim di Google Contacts
+    # Dijalankan di thread terpisah agar tidak blocking ack message
     sender_name = sender_data.get("senderName", "") or ""
-    if not sender_name:
+    _lookup_done = [False]
+    _lookup_result = [sender_name]
+
+    def _do_reverse_lookup():
         try:
             from features import contacts as _ct
-            sender_name = _ct.reverse_lookup_wa(chat_id) or ""
+            result = _ct.reverse_lookup_wa(chat_id)
+            if result:
+                _lookup_result[0] = result
         except Exception:
             pass
+        finally:
+            _lookup_done[0] = True
+
+    if not sender_name:
+        import threading as _lt
+        _lt_thread = _lt.Thread(target=_do_reverse_lookup, daemon=True)
+        _lt_thread.start()
+        _lt_thread.join(timeout=2.0)   # tunggu max 2 detik (cache hit instan)
+        sender_name = _lookup_result[0]
 
     # 👋 Welcome message — kirim sekali untuk pengguna baru (session kosong)
     try:
@@ -1115,6 +1130,11 @@ def _process_green_api(data):
         # Hapus semua json blocks dari teks utama
         clean_text  = _re2.sub(r'```json\s*[\s\S]*?```', '', text).strip()
 
+        # Guard: jika keduanya kosong, kirim pesan fallback
+        if not clean_text and not json_blocks:
+            green_api.send_message(chat_id, "_Maaf, tidak ada respons yang dapat ditampilkan._")
+            return
+
         # Kirim teks utama dulu (jika ada)
         if clean_text:
             try:
@@ -1129,12 +1149,11 @@ def _process_green_api(data):
                 if "interactive" in payload:
                     green_api.send_interactive_from_cloud_api(chat_id, payload)
                 else:
-                    # Bukan interactive payload — kirim sebagai code block teks
-                    green_api.send_message(chat_id, f"```\n{block.strip()}\n```")
+                    # Bukan interactive payload — kirim sebagai monospace
+                    green_api.send_message(chat_id, f"```\n{block.strip()[:2000]}\n```")
             except (_json.JSONDecodeError, Exception) as e:
                 print(f"[Interactive] Gagal parse JSON block: {e}")
-                # Fallback: kirim raw
-                green_api.send_message(chat_id, block.strip())
+                green_api.send_message(chat_id, block.strip()[:2000])
 
     try:
         _smart_send(reply_text)
