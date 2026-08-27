@@ -930,8 +930,26 @@ def _process_green_api(data):
             except Exception as e:
                 print(f"[Green-API] Gagal memproses media: {e}")
                 user_msg += f"\n[Sistem: Gagal memproses file/media yang dikirim: {e}]"
+
+    # 🔘 Interactive Button Reply — user tap tombol
+    elif msg_type == "interactiveMessageReplyButton":
+        btn_data  = msg_data.get("interactiveMessageReplyData", {})
+        btn_id    = btn_data.get("buttonId", "")
+        btn_title = btn_data.get("buttonTitle", btn_data.get("selectedButtonId", btn_id))
+        user_msg  = f"[USER_SELECTED: {btn_id}] {btn_title}".strip()
+        print(f"[Interactive] Button tap: id={btn_id}, title={btn_title}")
+
+    # 📋 Interactive List Reply — user pilih item dari list
+    elif msg_type == "interactiveMessageReplyList":
+        list_data  = msg_data.get("interactiveMessageReplyData", {})
+        row_id     = list_data.get("rowId", list_data.get("selectedRowId", ""))
+        row_title  = list_data.get("title", list_data.get("rowTitle", row_id))
+        user_msg   = f"[USER_SELECTED: {row_id}] {row_title}".strip()
+        print(f"[Interactive] List select: id={row_id}, title={row_title}")
+
     else:
         return  # Ignore tipe lain
+
 
     user_msg = user_msg.strip()
     if not user_msg and not media_data:
@@ -954,12 +972,21 @@ def _process_green_api(data):
         is_new_user = False
 
     if is_new_user:
-        welcome_msg = _msg.get_welcome_message()
-        if welcome_msg:
+        welcome_mode = os.getenv("WA_WELCOME_MODE", "id").lower()
+        if welcome_mode == "interactive":
             try:
-                green_api.send_message(chat_id, welcome_msg)
-            except Exception:
-                pass
+                interactive_payload = _msg.get_welcome_interactive()
+                green_api.send_interactive_from_cloud_api(chat_id, interactive_payload)
+            except Exception as we:
+                print(f"[Welcome] Gagal kirim interactive, fallback teks: {we}")
+                green_api.send_message(chat_id, _msg.get_welcome_message())
+        else:
+            welcome_msg = _msg.get_welcome_message()
+            if welcome_msg:
+                try:
+                    green_api.send_message(chat_id, welcome_msg)
+                except Exception:
+                    pass
 
     # ✅ Acknowledgment segera
     try:
@@ -1071,11 +1098,46 @@ def _process_green_api(data):
     finally:
         _done[0] = True  # hentikan thread progress
 
-    # 4. Kirim balasan ke WA — dengan retry 1x jika gagal
+    # 4. Kirim balasan ke WA — deteksi JSON interactive payload dulu
     if not reply_text:
         reply_text = "Maaf, APRIS tidak dapat memproses pesan ini saat ini."
+
+    def _smart_send(text: str):
+        """
+        Kirim teks ke WA. Jika ada ```json block berisi interactive payload,
+        ekstrak dan kirim via send_interactive_from_cloud_api().
+        Teks di luar block dikirim terpisah sebagai pesan biasa.
+        """
+        import json as _json, re as _re2
+
+        # Cari semua ```json ... ``` blocks
+        json_blocks = _re2.findall(r'```json\s*([\s\S]*?)```', text)
+        # Hapus semua json blocks dari teks utama
+        clean_text  = _re2.sub(r'```json\s*[\s\S]*?```', '', text).strip()
+
+        # Kirim teks utama dulu (jika ada)
+        if clean_text:
+            try:
+                green_api.send_message(chat_id, clean_text)
+            except Exception as e:
+                print(f"[WhatsApp] Gagal kirim teks: {e}", flush=True)
+
+        # Kirim setiap interactive payload
+        for block in json_blocks:
+            try:
+                payload = _json.loads(block.strip())
+                if "interactive" in payload:
+                    green_api.send_interactive_from_cloud_api(chat_id, payload)
+                else:
+                    # Bukan interactive payload — kirim sebagai code block teks
+                    green_api.send_message(chat_id, f"```\n{block.strip()}\n```")
+            except (_json.JSONDecodeError, Exception) as e:
+                print(f"[Interactive] Gagal parse JSON block: {e}")
+                # Fallback: kirim raw
+                green_api.send_message(chat_id, block.strip())
+
     try:
-        green_api.send_message(chat_id, reply_text)
+        _smart_send(reply_text)
     except Exception as send_err:
         print(f"[WhatsApp] Gagal kirim balasan (1): {send_err}", flush=True)
         time.sleep(3)
@@ -1086,6 +1148,7 @@ def _process_green_api(data):
             print(f"[WhatsApp] Retry gagal: {send_err2}", flush=True)
             _wa_notify_admin("Gagal kirim balasan ke WA (2x percobaan)",
                 f"chat_id: {chat_id}\nerror: {str(send_err2)[:300]}")
+
 
 
 

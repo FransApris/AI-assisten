@@ -1,4 +1,4 @@
-﻿"""
+"""
 features/messages.py — APRIS Message Templates
 ===============================================
 Semua template pesan WA terpusat di sini.
@@ -77,3 +77,37 @@ FLOOD_WARNING = (
     "⚠️ _Terlalu banyak pesan dalam waktu singkat. "
     "Mohon tunggu beberapa menit sebelum mengirim lagi._"
 )
+
+
+# ---------------------------------------------------------------------------
+# Interactive Welcome Payload (WhatsApp Cloud API format → dikonversi backend)
+# ---------------------------------------------------------------------------
+def get_welcome_interactive() -> dict:
+    """
+    Kembalikan payload JSON interactive buttons untuk welcome message.
+    Dikirim via green_api.send_interactive_from_cloud_api().
+    """
+    return {
+        "messaging_product": "whatsapp",
+        "type"             : "interactive",
+        "interactive"      : {
+            "type"  : "button",
+            "header": {"type": "text", "text": "⚡ Selamat datang di APRIS"},
+            "body"  : {
+                "text": (
+                    "Saya siap membantu produktivitas harian, diskusi teknis, "
+                    "coding, riset, dan banyak lagi.\n\n"
+                    "Mulai dari mana?"
+                )
+            },
+            "footer": {"text": "APRIS v4.1 — Adaptive Personal Response & Intelligent System"},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": "welcome_productivity", "title": "📋 Produktivitas"}},
+                    {"type": "reply", "reply": {"id": "welcome_info",         "title": "🔍 Cek Info"}},
+                    {"type": "reply", "reply": {"id": "welcome_freeask",      "title": "💬 Tanya Bebas"}},
+                ]
+            }
+        }
+    }
+
