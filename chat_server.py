@@ -1185,8 +1185,9 @@ def whatsapp():
     """
     data = request.get_json(silent=True) or {}
     
-    # Pastikan ini event pesan masuk
-    if data.get("typeWebhook") == "incomingMessageReceived":
+    # Pastikan ini event pesan masuk (atau pesan keluar dari HP sendiri untuk testing Developer)
+    webhook_type = data.get("typeWebhook")
+    if webhook_type in ["incomingMessageReceived", "outgoingMessageReceived"]:
         # Jalankan pemrosesan di background thread agar server tidak timeout
         threading.Thread(target=_process_green_api, args=(data,), daemon=True).start()
         
