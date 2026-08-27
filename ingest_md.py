@@ -118,7 +118,7 @@ def ingest_file(path: Path, log: dict) -> int:
         except Exception as e:
             print(f"\n  [ERROR] batch {i}: {e}")
 
-    print(f" ✓ ({added} chunk)")
+    print(f" OK ({added} chunk)")
     log[str(path)] = fhash
     return added
 
