@@ -5,7 +5,9 @@ Scheduler jobs yang membuat APRIS bertindak proaktif:
   1. Reminder kalender H-60 menit sebelum event
   2. Reminder obat yang belum diminum (cek setiap 30 menit)
 
-Semua notifikasi dikirim via SSE ke browser.
+Notifikasi dikirim via:
+  - SSE ke browser (jika terbuka)
+  - WhatsApp ke WA_OWNER_CHAT_ID (jika dikonfigurasi)
 """
 import os
 from datetime import datetime, timedelta
@@ -18,8 +20,13 @@ except Exception:
     from datetime import timezone
     TZ = timezone(timedelta(hours=7))
 
+# Nomor WA pemilik untuk notifikasi proaktif (format: 628xxx@c.us)
+WA_OWNER_CHAT_ID = os.getenv("WA_OWNER_CHAT_ID", "")
+
 # Callback untuk push SSE event ke semua client yang terhubung
 _sse_push: callable = None
+# Callback untuk kirim WA ke pemilik
+_wa_push: callable = None
 
 
 def set_sse_push(fn):
@@ -28,13 +35,31 @@ def set_sse_push(fn):
     _sse_push = fn
 
 
+def set_wa_push(fn):
+    """
+    Set callback untuk kirim WA ke pemilik.
+    fn harus menerima argumen: fn(message: str)
+    Dipanggil oleh chat_server saat startup jika WA_OWNER_CHAT_ID diset.
+    """
+    global _wa_push
+    _wa_push = fn
+
+
 def _push(event_type: str, message: str):
-    """Push notifikasi ke semua client SSE yang aktif."""
+    """Push notifikasi ke browser (SSE) DAN WhatsApp pemilik (jika aktif)."""
+    # 1. Push ke browser via SSE
     if _sse_push:
         try:
             _sse_push(event_type=event_type, message=message)
         except Exception as e:
             print(f"[Proactive] SSE push error: {e}")
+    # 2. Kirim ke WA pemilik
+    if _wa_push and WA_OWNER_CHAT_ID:
+        try:
+            _wa_push(message)
+        except Exception as e:
+            print(f"[Proactive] WA push error: {e}")
+
 
 
 def check_upcoming_events():

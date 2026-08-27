@@ -546,10 +546,19 @@ def _init_schedulers():
     # 3. Proactive Agent (kalender & obat)
     try:
         from features import proactive
+        from features import green_api as _ga
         proactive.set_sse_push(_sse_push)
+        # Kirim notif proaktif juga ke WA pemilik jika WA_OWNER_CHAT_ID diset
+        _owner_id = os.getenv("WA_OWNER_CHAT_ID", "")
+        if _owner_id:
+            proactive.set_wa_push(lambda msg, _cid=_owner_id: _ga.send_message(_cid, msg))
+            print(f"[Proactive] WA push aktif → {_owner_id}", flush=True)
+        else:
+            print("[Proactive] WA_OWNER_CHAT_ID tidak diset — notif hanya via browser", flush=True)
         proactive.register_jobs(sched)
     except Exception as e:
         print(f"[Scheduler] Proactive error: {e}")
+
 
 
 # ---------------------------------------------------------------------------
@@ -1509,6 +1518,65 @@ def chat():
                 except Exception as e:
                     apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
 
+        # Intercept untuk Pesan Terjadwal (SCHEDULE_MSG)
+        if "<SCHEDULE_MSG" in apris_reply or "<CANCEL_SCHEDULE_MSG" in apris_reply or "<LIST_SCHEDULE_MSG" in apris_reply:
+            import re
+            try:
+                from features import reminder as rem_mod
+                from features import green_api as _sched_ga
+
+                # LIST_SCHEDULE_MSG
+                if "<LIST_SCHEDULE_MSG" in apris_reply:
+                    apris_reply = re.sub(r'<LIST_SCHEDULE_MSG\s*/?>', '', apris_reply).strip()
+                    jobs = rem_mod.list_reminders()
+                    if jobs:
+                        job_lines = "\n".join(
+                            f"- `{j['id']}` — _{j['name']}_ → {j['next_run']}"
+                            for j in jobs if j['id'].startswith('rem_')
+                        )
+                        apris_reply += f"\n\n*Pesan Terjadwal:*\n{job_lines}" if job_lines else "\n\n_Tidak ada pesan terjadwal aktif._"
+                    else:
+                        apris_reply += "\n\n_Tidak ada pesan terjadwal aktif._"
+
+                # CANCEL_SCHEDULE_MSG
+                cancel_m = re.findall(r'<CANCEL_SCHEDULE_MSG\s+id="([^"]+)"\s*/?>', apris_reply)
+                if cancel_m:
+                    apris_reply = re.sub(r'<CANCEL_SCHEDULE_MSG[^>]*/?>', '', apris_reply).strip()
+                    for rid in cancel_m:
+                        try:
+                            rem_mod.cancel_reminder(rid.strip())
+                            apris_reply += f"\n\n✅ Pesan terjadwal `{rid}` berhasil dibatalkan."
+                        except ValueError:
+                            apris_reply += f"\n\n❌ ID `{rid}` tidak ditemukan."
+
+                # SCHEDULE_MSG
+                sched_matches = re.findall(
+                    r'<SCHEDULE_MSG\s+to="([^"]+)"\s+at="([^"]+)"\s+message="([^"]+)"\s*/?>',
+                    apris_reply
+                )
+                if sched_matches:
+                    apris_reply = re.sub(r'<SCHEDULE_MSG[^>]*/?>', '', apris_reply).strip()
+                    for to_num, at_time, msg_text in sched_matches:
+                        # Normalkan at_time: ganti 'T' dengan ' '
+                        run_at = at_time.replace('T', ' ')[:16]  # "YYYY-MM-DD HH:MM"
+                        # Callback: kirim WA ke nomor tujuan
+                        def _make_wa_callback(target_id):
+                            def _cb(target, message):
+                                try: _sched_ga.send_message(target_id, message)
+                                except Exception as cb_e:
+                                    print(f"[ScheduleMsg] Gagal kirim ke {target_id}: {cb_e}")
+                            return _cb
+                        rem_mod.set_send_callback(_make_wa_callback(to_num))
+                        result = rem_mod.set_reminder(
+                            message=msg_text, target=to_num, run_at=run_at
+                        )
+                        apris_reply += (
+                            f"\n\n✅ Pesan dijadwalkan ke *{to_num}* pada *{run_at} WIB*."
+                            f"\nID: `{result['id']}`"
+                        )
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal menjadwalkan pesan: {e}_"
+
         # Simpan ke history sesi
         now_str = datetime.now(TZ).strftime("%H:%M")
         history.append({"role": "user",  "content": user_msg,    "time": now_str})
@@ -1819,6 +1887,63 @@ def _run_action_interceptors(apris_reply: str) -> str:
                     apris_reply += f"\n\n{res}"
             except Exception as e:
                 apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
+
+    # --- Pesan Terjadwal (SCHEDULE_MSG) ---
+    if "<SCHEDULE_MSG" in apris_reply or "<CANCEL_SCHEDULE_MSG" in apris_reply or "<LIST_SCHEDULE_MSG" in apris_reply:
+        try:
+            from features import reminder as rem_mod
+            from features import green_api as _sched_ga
+
+            # LIST_SCHEDULE_MSG
+            if "<LIST_SCHEDULE_MSG" in apris_reply:
+                apris_reply = _re.sub(r'<LIST_SCHEDULE_MSG\s*/?>', '', apris_reply).strip()
+                jobs = rem_mod.list_reminders()
+                scheduled = [j for j in jobs if j['id'].startswith('rem_')]
+                if scheduled:
+                    job_lines = "\n".join(
+                        f"- `{j['id']}` — _{j['name']}_ → {j['next_run']}"
+                        for j in scheduled
+                    )
+                    apris_reply += f"\n\n*Pesan Terjadwal:*\n{job_lines}"
+                else:
+                    apris_reply += "\n\n_Tidak ada pesan terjadwal aktif._"
+
+            # CANCEL_SCHEDULE_MSG
+            cancel_m = _re.findall(r'<CANCEL_SCHEDULE_MSG\s+id="([^"]+)"\s*/?>', apris_reply)
+            if cancel_m:
+                apris_reply = _re.sub(r'<CANCEL_SCHEDULE_MSG[^>]*/?>', '', apris_reply).strip()
+                for rid in cancel_m:
+                    try:
+                        rem_mod.cancel_reminder(rid.strip())
+                        apris_reply += f"\n\n✅ Pesan terjadwal `{rid}` berhasil dibatalkan."
+                    except ValueError:
+                        apris_reply += f"\n\n❌ ID `{rid}` tidak ditemukan."
+
+            # SCHEDULE_MSG
+            sched_matches = _re.findall(
+                r'<SCHEDULE_MSG\s+to="([^"]+)"\s+at="([^"]+)"\s+message="([^"]+)"\s*/?>',
+                apris_reply
+            )
+            if sched_matches:
+                apris_reply = _re.sub(r'<SCHEDULE_MSG[^>]*/?>', '', apris_reply).strip()
+                for to_num, at_time, msg_text in sched_matches:
+                    run_at = at_time.replace('T', ' ')[:16]  # "YYYY-MM-DD HH:MM"
+                    def _make_wa_callback(target_id):
+                        def _cb(target, message):
+                            try: _sched_ga.send_message(target_id, message)
+                            except Exception as cb_e:
+                                print(f"[ScheduleMsg] Gagal kirim ke {target_id}: {cb_e}")
+                        return _cb
+                    rem_mod.set_send_callback(_make_wa_callback(to_num))
+                    result = rem_mod.set_reminder(
+                        message=msg_text, target=to_num, run_at=run_at
+                    )
+                    apris_reply += (
+                        f"\n\n✅ Pesan dijadwalkan ke *{to_num}* pada *{run_at} WIB*."
+                        f"\nID: `{result['id']}`"
+                    )
+        except Exception as e:
+            apris_reply += f"\n\n_Gagal menjadwalkan pesan: {e}_"
 
     return apris_reply
 
