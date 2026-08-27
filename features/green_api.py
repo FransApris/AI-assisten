@@ -84,7 +84,7 @@ def send_buttons(chat_id: str, header: str, body: str, buttons: list,
         print(f"[Green-API] send_buttons gagal ({e}), fallback ke teks biasa")
         # Fallback: konversi ke teks biasa dengan daftar opsi
         btn_text = "\n".join(
-            f"  *{i+1}.* {b['buttonText']['displayText']}"
+            f"  {i+1}. {b['buttonText']['displayText']}"
             for i, b in enumerate(normalized)
         )
         fallback = f"*{header}*\n\n{body}\n\n{btn_text}"
@@ -127,7 +127,7 @@ def send_list(chat_id: str, header: str, body: str,
             lines.append(f"*{section.get('title', '')}*")
             for row in section.get("rows", []):
                 desc = f" — _{row['description']}_" if row.get("description") else ""
-                lines.append(f"  • *{row['title']}*{desc}")
+                lines.append(f"  • {row['title']}{desc}")
         if footer:
             lines.append(f"\n_{footer}_")
         return send_message(chat_id, "\n".join(lines))
