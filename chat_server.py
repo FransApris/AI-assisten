@@ -932,16 +932,35 @@ def _process_green_api(data):
     if not user_msg and not media_data:
         return
 
+    # 🔍 Reverse lookup — cari nama pengirim di Google Contacts (background, cached)
+    sender_name = sender_data.get("senderName", "") or ""
+    if not sender_name:
+        try:
+            from features import contacts as _ct
+            sender_name = _ct.reverse_lookup_wa(chat_id) or ""
+        except Exception:
+            pass
+
     # ✅ Acknowledgment segera — cegah user kirim ulang karena mengira tidak masuk
     try:
-        green_api.send_message(chat_id, "⏳ _Pesan diterima. APRIS sedang memproses..._")
+        ack_name = f" {sender_name.split()[0]}," if sender_name else ""
+        green_api.send_message(chat_id, f"⏳ _Halo{ack_name} pesan diterima. APRIS sedang memproses..._")
     except Exception:
         pass
 
     # 2. Payload untuk /chat
-    payload = {"message": user_msg or "[Kirim Media]", "session_id": chat_id}
+    # Sertakan nama pengirim di pesan agar Gemini tahu konteks
+    if sender_name:
+        payload = {
+            "message"    : user_msg or "[Kirim Media]",
+            "session_id" : chat_id,
+            "sender_name": sender_name,
+        }
+    else:
+        payload = {"message": user_msg or "[Kirim Media]", "session_id": chat_id}
     if media_data:
         payload.update(media_data)
+
 
     # 3. Panggil /chat — timeout 60s, progress message tiap 30s
     port = os.getenv("PORT", "5052")
@@ -1505,18 +1524,26 @@ def chat():
                 apris_reply += f"\n\n_Gagal mengakses Google Tasks: {e}_"
 
         # Intercept untuk Google Contacts
-        if "<SEARCH_CONTACT" in apris_reply:
+        if "<SEARCH_CONTACT" in apris_reply or "<GET_CONTACT_WA" in apris_reply:
             import re
-            matches = re.findall(r'<SEARCH_CONTACT name="([^"]+)"\s*/?>', apris_reply)
-            if matches:
-                apris_reply = re.sub(r'<SEARCH_CONTACT[^>]*/?>', '', apris_reply).strip()
-                try:
-                    from features import contacts as contacts_module
-                    for name in matches:
+            try:
+                from features import contacts as contacts_module
+                # SEARCH_CONTACT — tampilkan detail kontak
+                sc_matches = re.findall(r'<SEARCH_CONTACT name="([^"]+)"\s*/?>', apris_reply)
+                if sc_matches:
+                    apris_reply = re.sub(r'<SEARCH_CONTACT[^>]*/?>', '', apris_reply).strip()
+                    for name in sc_matches:
                         res = contacts_module.search_contact(name.strip())
                         apris_reply += f"\n\n{res}"
-                except Exception as e:
-                    apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
+                # GET_CONTACT_WA — tampilkan nomor WA siap pakai
+                gw_matches = re.findall(r'<GET_CONTACT_WA name="([^"]+)"\s*/?>', apris_reply)
+                if gw_matches:
+                    apris_reply = re.sub(r'<GET_CONTACT_WA[^>]*/?>', '', apris_reply).strip()
+                    for name in gw_matches:
+                        res = contacts_module.get_contact_wa(name.strip())
+                        apris_reply += f"\n\n{res}"
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
 
         # Intercept untuk Pesan Terjadwal (SCHEDULE_MSG)
         if "<SCHEDULE_MSG" in apris_reply or "<CANCEL_SCHEDULE_MSG" in apris_reply or "<LIST_SCHEDULE_MSG" in apris_reply:
@@ -1886,18 +1913,26 @@ def _run_action_interceptors(apris_reply: str) -> str:
         except Exception as e:
             apris_reply += f"\n\n_Gagal mengakses Google Tasks: {e}_"
 
-    # --- Google Contacts ---
-    if "<SEARCH_CONTACT" in apris_reply:
-        matches = _re.findall(r'<SEARCH_CONTACT name="([^"]+)"\s*/?>', apris_reply)
-        if matches:
-            apris_reply = _re.sub(r'<SEARCH_CONTACT[^>]*/?>', '', apris_reply).strip()
-            try:
-                from features import contacts as contacts_module
-                for name in matches:
+    # --- Google Contacts (SEARCH_CONTACT & GET_CONTACT_WA) ---
+    if "<SEARCH_CONTACT" in apris_reply or "<GET_CONTACT_WA" in apris_reply:
+        try:
+            from features import contacts as contacts_module
+            # SEARCH_CONTACT — detail lengkap
+            sc_matches = _re.findall(r'<SEARCH_CONTACT name="([^"]+)"\s*/?>', apris_reply)
+            if sc_matches:
+                apris_reply = _re.sub(r'<SEARCH_CONTACT[^>]*/?>', '', apris_reply).strip()
+                for name in sc_matches:
                     res = contacts_module.search_contact(name.strip())
                     apris_reply += f"\n\n{res}"
-            except Exception as e:
-                apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
+            # GET_CONTACT_WA — nomor WA siap pakai
+            gw_matches = _re.findall(r'<GET_CONTACT_WA name="([^"]+)"\s*/?>', apris_reply)
+            if gw_matches:
+                apris_reply = _re.sub(r'<GET_CONTACT_WA[^>]*/?>', '', apris_reply).strip()
+                for name in gw_matches:
+                    res = contacts_module.get_contact_wa(name.strip())
+                    apris_reply += f"\n\n{res}"
+        except Exception as e:
+            apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
 
     # --- Pesan Terjadwal (SCHEDULE_MSG) ---
     if "<SCHEDULE_MSG" in apris_reply or "<CANCEL_SCHEDULE_MSG" in apris_reply or "<LIST_SCHEDULE_MSG" in apris_reply:
