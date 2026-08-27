@@ -877,6 +877,7 @@ def _process_green_api(data):
     """
     import requests, time, threading as _th
     from features import green_api
+    from features import messages as _msg
 
     # 1. Ekstrak data dari Green-API webhook
     sender_data = data.get("senderData", {})
@@ -886,11 +887,15 @@ def _process_green_api(data):
     if not chat_id:
         return
 
+    # 🛠️ Maintenance Mode — tolak semua pesan dengan notif
+    if _msg.MAINTENANCE_MODE:
+        green_api.send_message(chat_id, _msg.MAINTENANCE_TEXT)
+        return
+
     # 🔒 Whitelist: tolak nomor yang tidak terdaftar
     if not _wa_is_whitelisted(chat_id):
         print(f"[Whitelist] Nomor ditolak: {chat_id}", flush=True)
-        green_api.send_message(chat_id,
-            "🚫 Maaf, nomor Anda tidak terdaftar untuk menggunakan APRIS.")
+        green_api.send_message(chat_id, _msg.WHITELIST_BLOCKED)
         return
 
     # 🔁 Dedup: abaikan webhook duplikat dari Green-API
@@ -941,10 +946,24 @@ def _process_green_api(data):
         except Exception:
             pass
 
-    # ✅ Acknowledgment segera — cegah user kirim ulang karena mengira tidak masuk
+    # 👋 Welcome message — kirim sekali untuk pengguna baru (session kosong)
     try:
-        ack_name = f" {sender_name.split()[0]}," if sender_name else ""
-        green_api.send_message(chat_id, f"⏳ _Halo{ack_name} pesan diterima. APRIS sedang memproses..._")
+        history = get_or_create_session(chat_id)
+        is_new_user = (len(history) == 0)
+    except Exception:
+        is_new_user = False
+
+    if is_new_user:
+        welcome_msg = _msg.get_welcome_message()
+        if welcome_msg:
+            try:
+                green_api.send_message(chat_id, welcome_msg)
+            except Exception:
+                pass
+
+    # ✅ Acknowledgment segera
+    try:
+        green_api.send_message(chat_id, _msg.get_ack_message(sender_name))
     except Exception:
         pass
 
@@ -975,8 +994,7 @@ def _process_green_api(data):
                 break
             elapsed += 30
             try:
-                green_api.send_message(chat_id,
-                    f"⏳ _Masih memproses... ({elapsed}s). Mohon tunggu sebentar._")
+                green_api.send_message(chat_id, _msg.get_progress_message())
             except Exception:
                 pass
 
