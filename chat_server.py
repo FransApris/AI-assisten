@@ -33,7 +33,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
+# Gemini API Key — support rotasi multi-key (pisahkan dengan koma di .env)
+# Contoh: GEMINI_API_KEY=key1,key2,key3
+_GEMINI_KEYS_RAW = os.getenv("GEMINI_API_KEY", "")
+_GEMINI_KEYS     = [k.strip() for k in _GEMINI_KEYS_RAW.split(",") if k.strip()]
+GEMINI_API_KEY   = _GEMINI_KEYS[0] if _GEMINI_KEYS else ""
+_gemini_key_idx  = 0
+_gemini_key_lock = threading.Lock()
+
 CHAT_MODEL        = os.getenv("GEMINI_CHAT_MODEL", "models/gemini-2.5-flash")
 EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
 # Railway set PORT otomatis; fallback ke 5052 untuk lokal
@@ -43,21 +50,27 @@ SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", 24))
 MAX_FILE_BYTES    = int(os.getenv("MAX_FILE_BYTES", 10 * 1024 * 1024))  # default 10 MB
 # Context window: ringkas history jika melebihi batas ini
 MAX_HISTORY_MSGS  = int(os.getenv("MAX_HISTORY_MSGS", 40))
-SUMMARY_KEEP_MSGS = int(os.getenv("SUMMARY_KEEP_MSGS", 10))  # pesan terbaru yang tetap ada
+SUMMARY_KEEP_MSGS = int(os.getenv("SUMMARY_KEEP_MSGS", 10))
 
 # RAG Knowledge Base config
 _RAG_DEFAULT  = str(Path(__file__).resolve().parent.parent / "rag-knowledge" / "vectorstore")
-RAG_DB_PATH       = os.getenv("RAG_DB_PATH", _RAG_DEFAULT)
-RAG_COLLECTION    = os.getenv("RAG_COLLECTION", "apris_knowledge")
-RAG_TOP_K         = int(os.getenv("RAG_TOP_K", 3))
-RAG_ENABLED       = os.getenv("RAG_ENABLED", "true").lower() == "true"
+RAG_DB_PATH   = os.getenv("RAG_DB_PATH", _RAG_DEFAULT)
+RAG_COLLECTION = os.getenv("RAG_COLLECTION", "apris_knowledge")
+RAG_TOP_K      = int(os.getenv("RAG_TOP_K", 3))
+RAG_ENABLED    = os.getenv("RAG_ENABLED", "true").lower() == "true"
 
-# WhatsApp / Twilio config
+# WhatsApp / Green-API antisipasi config
+_WA_WHITELIST_RAW = os.getenv("WA_WHITELIST", "")       # kosong = semua nomor diizinkan
+WA_WHITELIST      = [n.strip() for n in _WA_WHITELIST_RAW.split(",") if n.strip()]
+WA_ADMIN_CHAT_ID  = os.getenv("WA_ADMIN_CHAT_ID", "")   # chat_id admin untuk notif error
+
+# Legacy Twilio config
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WA_FROM       = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 _WA_ALLOWED_RAW      = os.getenv("WHATSAPP_ALLOWED_NUMBERS", "")
 WA_ALLOWED_NUMBERS   = [n.strip() for n in _WA_ALLOWED_RAW.split(",") if n.strip()]
+
 
 # Timezone WIB (UTC+7) — fallback tanpa tzdata
 try:
@@ -183,12 +196,77 @@ AUTH_ENABLED      = bool(ALLOWED_EMAILS)
 INTERNAL_SECRET   = uuid.uuid4().hex
 
 
-def get_client():
+def get_client(api_key: str = None):
+    """Buat / ambil Gemini client. Jika api_key diberikan, buat client baru."""
     global _genai_client
+    if api_key:
+        from google import genai
+        return genai.Client(api_key=api_key)
     if _genai_client is None:
         from google import genai
         _genai_client = genai.Client(api_key=GEMINI_API_KEY)
     return _genai_client
+
+
+def _rotate_gemini_key() -> str:
+    """
+    Rotasi ke API key Gemini berikutnya jika tersedia.
+    Dipanggil saat terkena rate limit 429.
+    Return: api_key baru, atau string kosong jika hanya 1 key.
+    """
+    global _gemini_key_idx, _genai_client
+    if len(_GEMINI_KEYS) <= 1:
+        return ""
+    with _gemini_key_lock:
+        _gemini_key_idx = (_gemini_key_idx + 1) % len(_GEMINI_KEYS)
+        new_key = _GEMINI_KEYS[_gemini_key_idx]
+        _genai_client = None   # reset cache agar buat ulang dengan key baru
+    print(f"[KeyRotation] Beralih ke API key #{_gemini_key_idx + 1}", flush=True)
+    return new_key
+
+
+# ---------------------------------------------------------------------------
+# Webhook Deduplication
+# ---------------------------------------------------------------------------
+_seen_msg_ids: set = set()
+_seen_msg_lock     = threading.Lock()
+_SEEN_MSG_MAX      = 500
+
+
+def _wa_seen_msg(msg_id: str) -> bool:
+    """Return True jika msg_id sudah diproses (duplikat). Auto-register jika belum."""
+    with _seen_msg_lock:
+        if msg_id in _seen_msg_ids:
+            return True
+        _seen_msg_ids.add(msg_id)
+        if len(_seen_msg_ids) > _SEEN_MSG_MAX:
+            _seen_msg_ids.discard(next(iter(_seen_msg_ids)))
+        return False
+
+
+def _wa_is_whitelisted(chat_id: str) -> bool:
+    """Cek apakah chat_id diizinkan. Jika WA_WHITELIST kosong → semua diizinkan."""
+    if not WA_WHITELIST:
+        return True
+    return any(chat_id.startswith(n) or n in chat_id for n in WA_WHITELIST)
+
+
+def _wa_notify_admin(subject: str, detail: str):
+    """Kirim notifikasi error kritis ke admin via WA. Hanya jika WA_ADMIN_CHAT_ID diset."""
+    if not WA_ADMIN_CHAT_ID:
+        return
+    try:
+        from features import green_api as _ga
+        now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+        msg = (
+            f"\U0001f6a8 *[APRIS ERROR ALERT]*\n"
+            f"_{now_str}_\n\n"
+            f"*{subject}*\n\n"
+            f"{detail[:500]}"
+        )
+        _ga.send_message(WA_ADMIN_CHAT_ID, msg)
+    except Exception as e:
+        print(f"[AdminNotif] Gagal kirim notif admin: {e}", flush=True)
 
 
 def get_chroma():
