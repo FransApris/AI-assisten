@@ -1084,6 +1084,11 @@ def _process_green_api(data):
             _wa_notify_admin("Error 500 pada /chat",
                 f"chat_id: {chat_id}\npesan: {user_msg[:200]}\nerror: {err[:300]}")
 
+        elif res.status_code == 503:
+            err = res_data.get("error", "Server sibuk saat ini.")
+            reply_text = f"⏳ *Server AI Sedang Penuh*\n\n_{err}_\n\nMohon bersabar dan coba kirim ulang pesan Anda dalam 1-2 menit."
+
+
         elif res.status_code == 413:
             mb         = int(os.getenv("MAX_FILE_BYTES", 10*1024*1024)) // (1024*1024)
             reply_text = f"📦 *File terlalu besar.* Batas {mb} MB. Kirim file lebih kecil."
@@ -1750,6 +1755,14 @@ def chat():
                 "retry_after": wait,
                 "code"      : 429,
             }), 429
+        
+        # Penanganan 503 Overloaded (High Demand)
+        if "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str:
+            return jsonify({
+                "error": "Server AI sedang melayani terlalu banyak permintaan secara global (Overloaded). Lonjakan trafik ini biasanya hanya sementara.",
+                "code" : 503
+            }), 503
+
         return jsonify({"error": err_str}), 500
     finally:
         # Selalu bebaskan per-session lock
