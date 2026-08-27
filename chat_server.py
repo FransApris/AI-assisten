@@ -788,38 +788,50 @@ def _process_green_api(data):
     """
     Diproses di background agar webhook merespons 200 OK dengan cepat.
     """
-    import requests
+    import requests, time, threading as _th
     from features import green_api
-    
+
     # 1. Ekstrak data dari Green-API webhook
     sender_data = data.get("senderData", {})
-    chat_id = sender_data.get("chatId", "")
+    chat_id     = sender_data.get("chatId", "")
+    msg_id      = data.get("idMessage", "") or data.get("messageData", {}).get("idMessage", "")
+
     if not chat_id:
+        return
+
+    # 🔒 Whitelist: tolak nomor yang tidak terdaftar
+    if not _wa_is_whitelisted(chat_id):
+        print(f"[Whitelist] Nomor ditolak: {chat_id}", flush=True)
+        green_api.send_message(chat_id,
+            "🚫 Maaf, nomor Anda tidak terdaftar untuk menggunakan APRIS.")
+        return
+
+    # 🔁 Dedup: abaikan webhook duplikat dari Green-API
+    if msg_id and _wa_seen_msg(msg_id):
+        print(f"[Dedup] Pesan duplikat diabaikan: {msg_id}", flush=True)
         return
 
     # 🛡️ Flood guard: cek apakah nomor ini mengirim terlalu banyak pesan
     is_flooded, flood_msg, _ = _wa_check_flood(chat_id)
     if is_flooded:
-        if flood_msg:   # Kirim notif hanya sekali per cooldown
+        if flood_msg:
             green_api.send_message(chat_id, flood_msg)
-        return          # Hentikan pemrosesan — jangan teruskan ke Gemini
+        return
 
     msg_data = data.get("messageData", {})
     msg_type = msg_data.get("typeMessage", "")
-    
-    user_msg = ""
+
+    user_msg   = ""
     media_data = {}
-    
+
     if msg_type == "textMessage":
         user_msg = msg_data.get("textMessageData", {}).get("textMessage", "")
     elif msg_type == "extendedTextMessage":
         user_msg = msg_data.get("extendedTextMessageData", {}).get("text", "")
     elif msg_type in ["imageMessage", "documentMessage", "audioMessage", "videoMessage"]:
-        # Ekstrak caption/text
-        user_msg = msg_data.get("fileMessageData", {}).get("caption", "")
-        # Download media
+        user_msg     = msg_data.get("fileMessageData", {}).get("caption", "")
         download_url = msg_data.get("fileMessageData", {}).get("downloadUrl", "")
-        mime_type = msg_data.get("fileMessageData", {}).get("mimeType", "")
+        mime_type    = msg_data.get("fileMessageData", {}).get("mimeType", "")
         if download_url:
             try:
                 media_data = green_api.media_to_base64(download_url, mime_type)
@@ -827,104 +839,130 @@ def _process_green_api(data):
                 print(f"[Green-API] Gagal memproses media: {e}")
                 user_msg += f"\n[Sistem: Gagal memproses file/media yang dikirim: {e}]"
     else:
-        # Ignore tipe pesan lain
-        return
+        return  # Ignore tipe lain
 
     user_msg = user_msg.strip()
     if not user_msg and not media_data:
         return
 
-    # ✅ Acknowledgment segera: beri tahu user pesan diterima & sedang diproses
-    # Ini mencegah user kirim ulang karena mengira pesan tidak masuk
+    # ✅ Acknowledgment segera — cegah user kirim ulang karena mengira tidak masuk
     try:
-        ack = "⏳ _Pesan diterima. APRIS sedang memproses..._"
-        green_api.send_message(chat_id, ack)
+        green_api.send_message(chat_id, "⏳ _Pesan diterima. APRIS sedang memproses..._")
     except Exception:
-        pass   # Jangan sampai gagal ack membatalkan proses utama
+        pass
 
-    # 2. Siapkan payload untuk endpoint /chat internal kita
-    payload = {
-        "message": user_msg or "[Kirim Media]",
-        "session_id": chat_id
-    }
+    # 2. Payload untuk /chat
+    payload = {"message": user_msg or "[Kirim Media]", "session_id": chat_id}
     if media_data:
         payload.update(media_data)
 
-    # 3. Panggil /chat
+    # 3. Panggil /chat — timeout 60s, progress message tiap 30s
     port = os.getenv("PORT", "5052")
+    reply_text     = ""
+    _done          = [False]
+
+    def _send_progress():
+        elapsed = 0
+        while not _done[0]:
+            time.sleep(30)
+            if _done[0]:
+                break
+            elapsed += 30
+            try:
+                green_api.send_message(chat_id,
+                    f"⏳ _Masih memproses... ({elapsed}s). Mohon tunggu sebentar._")
+            except Exception:
+                pass
+
+    _th.Thread(target=_send_progress, daemon=True).start()
+
     try:
-        res = requests.post(
+        res      = requests.post(
             f"http://127.0.0.1:{port}/chat",
-            json=payload,
-            headers={"X-Auth-Token": INTERNAL_SECRET},
-            timeout=120
+            json    = payload,
+            headers = {"X-Auth-Token": INTERNAL_SECRET},
+            timeout = 60,   # dikurangi dari 120s → 60s
         )
         res_data = res.json()
 
-        # Tangani error spesifik dari /chat dan beri notifikasi WA yang jelas
         if res.status_code == 429:
-            # Rate limit Gemini atau server sedang sibuk
-            retry = res_data.get("retry_after", 60)
-            reply_text = (
-                f"⏱️ *APRIS sedang kelebihan beban.*\n\n"
-                f"Terlalu banyak permintaan dalam waktu bersamaan. "
-                f"Silakan kirim ulang pesan dalam *{retry} detik*.\n\n"
-                f"_Pesan Anda: \"{user_msg[:80]}{'...' if len(user_msg)>80 else ''}\"_"
-            )
+            retry   = res_data.get("retry_after", 60)
+            # Coba rotasi Gemini API key dan ulangi request
+            new_key = _rotate_gemini_key()
+            if new_key:
+                print("[KeyRotation] Rotasi karena 429, coba ulang", flush=True)
+                try:
+                    res2 = requests.post(
+                        f"http://127.0.0.1:{port}/chat",
+                        json    = payload,
+                        headers = {"X-Auth-Token": INTERNAL_SECRET},
+                        timeout = 60,
+                    )
+                    if res2.status_code == 200:
+                        reply_text = res2.json().get("reply", "")
+                except Exception:
+                    pass
+            if not reply_text:
+                reply_text = (
+                    f"⏱️ *APRIS sedang kelebihan beban.*\n\n"
+                    f"Kirim ulang dalam *{retry} detik*.\n\n"
+                    f"_Pesan: \"{user_msg[:80]}{'...' if len(user_msg)>80 else ''}\"_"
+                )
+
         elif res.status_code == 500:
-            err = res_data.get("error", "Unknown error")
+            err        = res_data.get("error", "Unknown error")
             reply_text = (
                 f"❌ *APRIS mengalami kendala internal.*\n\n"
-                f"Detail: _{err[:200]}_\n\n"
-                f"Coba kirim ulang pesan Anda. Jika terus berulang, hubungi admin."
+                f"_{err[:200]}_\n\nCoba kirim ulang. Jika berulang, hubungi admin."
             )
+            _wa_notify_admin("Error 500 pada /chat",
+                f"chat_id: {chat_id}\npesan: {user_msg[:200]}\nerror: {err[:300]}")
+
         elif res.status_code == 413:
-            reply_text = (
-                f"📦 *File terlalu besar.*\n\n"
-                f"Batas ukuran file adalah {os.getenv('MAX_FILE_BYTES', 10*1024*1024) // (1024*1024)} MB. "
-                f"Silakan kirim file yang lebih kecil."
-            )
+            mb         = int(os.getenv("MAX_FILE_BYTES", 10*1024*1024)) // (1024*1024)
+            reply_text = f"📦 *File terlalu besar.* Batas {mb} MB. Kirim file lebih kecil."
+
         else:
             reply_text = res_data.get("reply", "Maaf, terjadi kesalahan saat memproses pesan.")
 
     except requests.exceptions.Timeout:
-        print(f"[WhatsApp] Timeout menunggu /chat setelah 120s")
+        print("[WhatsApp] Timeout /chat setelah 60s", flush=True)
         reply_text = (
-            f"⏳ *APRIS membutuhkan waktu terlalu lama.*\n\n"
-            f"Permintaan Anda diproses lebih dari 2 menit. "
-            f"Kemungkinan pertanyaan sangat kompleks atau koneksi lambat.\n\n"
-            f"Silakan coba lagi dengan pertanyaan yang lebih singkat."
+            "⏳ *APRIS membutuhkan waktu terlalu lama.*\n\n"
+            "Coba lagi dengan pertanyaan lebih singkat."
         )
-    except requests.exceptions.ConnectionError:
-        print(f"[WhatsApp] Tidak bisa konek ke /chat — server down?")
-        reply_text = (
-            f"🔌 *APRIS tidak merespons.*\n\n"
-            f"Server sedang dalam proses restart atau mengalami gangguan. "
-            f"Silakan coba lagi dalam 1–2 menit."
-        )
-    except Exception as e:
-        print(f"[WhatsApp] Internal request failed: {e}")
-        reply_text = (
-            f"⚠️ *Terjadi kesalahan tak terduga.*\n\n"
-            f"_{str(e)[:150]}_\n\n"
-            f"Silakan coba kirim ulang pesan Anda."
-        )
+        _wa_notify_admin("Timeout /chat (>60s)", f"chat_id: {chat_id}\npesan: {user_msg[:200]}")
 
-    # 4. Kirim balasan ke WhatsApp via Green-API (dengan retry 1x jika gagal)
+    except requests.exceptions.ConnectionError:
+        print("[WhatsApp] Tidak bisa konek ke /chat", flush=True)
+        reply_text = "🔌 *APRIS tidak merespons.* Coba lagi dalam 1–2 menit."
+        _wa_notify_admin("Connection Error ke /chat", f"chat_id: {chat_id}\npesan: {user_msg[:200]}")
+
+    except Exception as e:
+        print(f"[WhatsApp] Exception: {e}", flush=True)
+        reply_text = f"⚠️ *Terjadi kesalahan tak terduga.*\n\n_{str(e)[:150]}_\n\nSilakan coba kirim ulang."
+        _wa_notify_admin("Exception tak terduga",
+            f"chat_id: {chat_id}\nerror: {str(e)[:400]}")
+
+    finally:
+        _done[0] = True  # hentikan thread progress
+
+    # 4. Kirim balasan ke WA — dengan retry 1x jika gagal
     if not reply_text:
         reply_text = "Maaf, APRIS tidak dapat memproses pesan ini saat ini."
     try:
         green_api.send_message(chat_id, reply_text)
     except Exception as send_err:
-        print(f"[WhatsApp] Gagal kirim balasan (attempt 1): {send_err}", flush=True)
-        # Retry sekali setelah 3 detik
-        import time
+        print(f"[WhatsApp] Gagal kirim balasan (1): {send_err}", flush=True)
         time.sleep(3)
         try:
             green_api.send_message(chat_id, reply_text)
-            print(f"[WhatsApp] Retry kirim balasan: berhasil", flush=True)
+            print("[WhatsApp] Retry kirim balasan: berhasil", flush=True)
         except Exception as send_err2:
-            print(f"[WhatsApp] Retry gagal juga: {send_err2}", flush=True)
+            print(f"[WhatsApp] Retry gagal: {send_err2}", flush=True)
+            _wa_notify_admin("Gagal kirim balasan ke WA (2x percobaan)",
+                f"chat_id: {chat_id}\nerror: {str(send_err2)[:300]}")
+
 
 
 
