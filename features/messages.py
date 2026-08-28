@@ -139,3 +139,57 @@ def get_welcome_interactive() -> dict:
         }
     }
 
+
+# ---------------------------------------------------------------------------
+# Cheatsheet / Catatan Perintah WA
+# ---------------------------------------------------------------------------
+# Kata kunci yang memicu tampilnya catatan (case-insensitive)
+CHEATSHEET_TRIGGERS = {"catatan", "bantuan", "help", "panduan", "perintah", "?", "menu"}
+
+def get_cheatsheet() -> str:
+    """
+    Kembalikan daftar perintah dan kemampuan APRIS via WhatsApp.
+    Ditampilkan saat user mengetik: catatan / bantuan / help / ?
+    """
+    return (
+        "📋 *CATATAN PERINTAH APRIS*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        "💬 *CHAT BEBAS*\n"
+        "Langsung ketik pertanyaan atau instruksi apa saja.\n\n"
+
+        "🔍 *RISET & INFORMASI*\n"
+        "Contoh: _\"Cari info tentang...\"_\n"
+        "Contoh: _\"Ringkaskan artikel ini: [tempel teks]\"_\n\n"
+
+        "✍️ *PENULISAN & DOKUMEN*\n"
+        "Contoh: _\"Buatkan email untuk...\"_\n"
+        "Contoh: _\"Perbaiki tulisan ini: [tempel teks]\"_\n\n"
+
+        "💻 *CODING & TEKNIS*\n"
+        "Contoh: _\"Debug kode ini: [tempel kode]\"_\n"
+        "Contoh: _\"Jelaskan cara kerja...\"_\n\n"
+
+        "📅 *KALENDER & PENGINGAT*\n"
+        "Contoh: _\"Ingatkan saya meeting besok jam 10\"_\n"
+        "Contoh: _\"Apa jadwal saya minggu ini?\"_\n\n"
+
+        "💊 *OBAT & KESEHATAN*\n"
+        "Contoh: _\"Catat obat paracetamol 2x sehari\"_\n\n"
+
+        "🖼️ *GAMBAR & FILE*\n"
+        "Kirim gambar/dokumen langsung — APRIS akan menganalisis.\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔑 *KATA KUNCI KHUSUS*\n"
+        "• *catatan* / *bantuan* / *?* — tampilkan menu ini\n"
+        "• *lupa* — APRIS bantu ingat konteks terakhir\n"
+        "• *hapus riwayat* — mulai percakapan baru\n\n"
+
+        "_Ketik langsung apa yang Anda butuhkan — tidak perlu format khusus!_ 😊"
+    )
+
+
+def is_cheatsheet_request(text: str) -> bool:
+    """Return True jika pesan adalah permintaan catatan/bantuan."""
+    return text.strip().lower() in CHEATSHEET_TRIGGERS

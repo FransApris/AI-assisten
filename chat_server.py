@@ -1317,6 +1317,13 @@ def _process_green_api(data):
         if _REGISTRY_OK:
             _ureg.add_user(chat_id, name=sender_name, added_by="welcomed")
 
+    # 📋 Cheatsheet — deteksi kata kunci sebelum dikirim ke AI
+    # Hemat token: tidak perlu memanggil Gemini untuk perintah ini
+    if _msg.is_cheatsheet_request(user_msg):
+        print(f"[Cheatsheet] Dikirim ke {chat_id}", flush=True)
+        green_api.send_message(chat_id, _msg.get_cheatsheet())
+        return
+
     # ✅ Acknowledgment segera
     try:
         green_api.send_message(chat_id, _msg.get_ack_message(sender_name))
