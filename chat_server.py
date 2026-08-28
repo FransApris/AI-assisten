@@ -31,6 +31,31 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent))
 
 # ---------------------------------------------------------------------------
+# Google Credentials Bootstrap (Railway)
+# ---------------------------------------------------------------------------
+# Di Railway, credentials.json & token Google disimpan sebagai base64 env var.
+# Decode dan tulis ke filesystem sebelum modul lain diimport.
+def _setup_google_credentials():
+    """Decode Google credentials dari env var BASE64 ke file (mode Railway)."""
+    import base64
+    _BASE = Path(__file__).parent
+    mapping = {
+        "GOOGLE_CREDENTIALS_B64": _BASE / "credentials.json",
+        "GOOGLE_TOKEN_B64"      : _BASE / "token_fad2beth.json",
+    }
+    for env_key, dest_path in mapping.items():
+        b64 = os.getenv(env_key, "")
+        if b64 and not dest_path.exists():
+            try:
+                dest_path.write_bytes(base64.b64decode(b64))
+                print(f"[CredSetup] {dest_path.name} ditulis dari env var {env_key}", flush=True)
+            except Exception as e:
+                print(f"[CredSetup] Gagal decode {env_key}: {e}", flush=True)
+
+_setup_google_credentials()
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 # Gemini API Key — support rotasi multi-key (pisahkan dengan koma di .env)
@@ -53,11 +78,14 @@ MAX_HISTORY_MSGS  = int(os.getenv("MAX_HISTORY_MSGS", 40))
 SUMMARY_KEEP_MSGS = int(os.getenv("SUMMARY_KEEP_MSGS", 10))
 
 # RAG Knowledge Base config
-_RAG_DEFAULT  = str(Path(__file__).resolve().parent.parent / "rag-knowledge" / "vectorstore")
-RAG_DB_PATH   = os.getenv("RAG_DB_PATH", _RAG_DEFAULT)
+_RAG_DEFAULT   = str(Path(__file__).resolve().parent.parent / "rag-knowledge" / "vectorstore")
+RAG_DB_PATH    = os.getenv("RAG_DB_PATH", _RAG_DEFAULT)
 RAG_COLLECTION = os.getenv("RAG_COLLECTION", "apris_knowledge")
 RAG_TOP_K      = int(os.getenv("RAG_TOP_K", 3))
 RAG_ENABLED    = os.getenv("RAG_ENABLED", "true").lower() == "true"
+# Jika RAG_SERVER_URL diset → panggil rag_server via HTTP (mode Railway)
+# Jika kosong → buka ChromaDB lokal langsung (mode lokal)
+RAG_SERVER_URL = os.getenv("RAG_SERVER_URL", "").rstrip("/")
 
 # WhatsApp / Green-API antisipasi config
 _WA_WHITELIST_RAW = os.getenv("WA_WHITELIST", "")       # kosong = semua nomor diizinkan
@@ -270,7 +298,11 @@ def _wa_notify_admin(subject: str, detail: str):
 
 
 def get_chroma():
-    """Buat ChromaDB connection baru (thread-safe: tiap request punya client sendiri)."""
+    """Buat ChromaDB connection baru (thread-safe: tiap request punya client sendiri).
+    Hanya dipakai dalam mode lokal (RAG_SERVER_URL tidak diset).
+    """
+    if RAG_SERVER_URL:  # mode HTTP — tidak perlu ChromaDB lokal
+        return None
     try:
         import chromadb
         client = chromadb.PersistentClient(path=RAG_DB_PATH)
@@ -283,10 +315,43 @@ def get_chroma():
 def rag_retrieve(query: str, top_k: int = None) -> str:
     """
     Cari konteks relevan dari Knowledge Base.
+
+    Mode HTTP  (RAG_SERVER_URL diset): panggil POST /ask ke rag_server.py
+    Mode Lokal (RAG_SERVER_URL kosong): buka ChromaDB langsung dari filesystem
+
     Return: string konteks untuk diinjeksi ke prompt, atau string kosong.
     """
     if not RAG_ENABLED:
         return ""
+
+    # ── Mode HTTP: panggil rag_server via REST API ──────────────────────────
+    if RAG_SERVER_URL:
+        try:
+            import requests as _req
+            k = top_k or RAG_TOP_K
+            resp = _req.post(
+                f"{RAG_SERVER_URL}/ask",
+                json={"query": query, "top_k": k},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            # rag_server /ask mengembalikan {"answer": ..., "sources": [...], "context": ...}
+            context = data.get("context", "")
+            if not context:
+                # Fallback: gabungkan dari sources jika context tidak ada
+                sources = data.get("sources", [])
+                context = "\n\n".join(
+                    f"[Sumber: {s.get('source','?')}]\n{s.get('content','')[:700]}"
+                    for s in sources
+                ) if sources else ""
+            print(f"[RAG-HTTP] Query berhasil, konteks {len(context)} chars", flush=True)
+            return context
+        except Exception as e:
+            print(f"[RAG-HTTP] Gagal panggil rag_server ({RAG_SERVER_URL}): {e}", flush=True)
+            return ""
+
+    # ── Mode Lokal: ChromaDB langsung ───────────────────────────────────────
     col = get_chroma()
     if col is None:
         return ""
@@ -540,8 +605,16 @@ def _init_schedulers():
             name="Auto Drive Ingest",
         )
         print("[Scheduler] Drive auto-ingest: setiap 6 jam", flush=True)
+
+        # Di Railway: jalankan ingest sekali langsung saat startup
+        # agar vectorstore terisi dari Google Drive sebelum request pertama masuk
+        if os.getenv("RAILWAY_ENVIRONMENT"):
+            print("[DriveIngest] Railway detected — menjalankan ingest awal dari Google Drive...", flush=True)
+            threading.Thread(target=_run_drive_ingest, daemon=True, name="startup-ingest").start()
+
     except Exception as e:
         print(f"[Scheduler] Drive ingest error: {e}")
+
 
     # 3. Proactive Agent (kalender & obat)
     try:
@@ -705,16 +778,35 @@ def take_meds():
 @app.route("/health")
 @app.route("/status")
 def status():
-    rag_ok = get_chroma() is not None
-    rag_count = 0
-    if rag_ok:
-        try: rag_count = get_chroma().count()
-        except: pass
+    # Cek status RAG — bedakan mode HTTP vs lokal
+    rag_mode    = "http" if RAG_SERVER_URL else "local"
+    rag_ok      = False
+    rag_count   = 0
+
+    if RAG_SERVER_URL:
+        # Mode HTTP: ping rag_server
+        try:
+            import requests as _req
+            r = _req.get(f"{RAG_SERVER_URL}/status", timeout=5)
+            if r.status_code == 200:
+                rag_ok    = True
+                rag_count = r.json().get("total_chunks", r.json().get("chunks", 0))
+        except Exception:
+            rag_ok = False
+    else:
+        # Mode lokal: cek ChromaDB langsung
+        col = get_chroma()
+        rag_ok = col is not None
+        if rag_ok:
+            try: rag_count = col.count()
+            except: pass
+
     try:
         from features import memory_semantic
         sem_count = memory_semantic.count()
     except Exception:
         sem_count = 0
+
     return jsonify({
         "status"        : "online",
         "model"         : CHAT_MODEL,
@@ -723,7 +815,13 @@ def status():
         "sessions"      : len(_chat_sessions),
         "sse_clients"   : len(_sse_clients),
         "env"           : "railway" if os.getenv("RAILWAY_ENVIRONMENT") else "local",
-        "rag"           : {"enabled": RAG_ENABLED, "connected": rag_ok, "chunks": rag_count},
+        "rag"           : {
+            "enabled"  : RAG_ENABLED,
+            "mode"     : rag_mode,
+            "connected": rag_ok,
+            "chunks"   : rag_count,
+            "server"   : RAG_SERVER_URL or None,
+        },
         "semantic_memory": {"entries": sem_count},
         "scheduler"     : {"running": _scheduler is not None and _scheduler.running if _scheduler else False},
     })

@@ -20,12 +20,20 @@ import google_drive
 import chromadb
 from google import genai
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
-CHROMA_DB_PATH = str(BASE_DIR.parent / "rag-knowledge" / "vectorstore")
+GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
+EMBEDDING_MODEL   = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION_NAME", "apris_knowledge")
+
+# Path vectorstore:
+#   1. RAG_DB_PATH env var (prioritas tertinggi)
+#   2. /tmp/vectorstore (Railway — ephemeral, diisi ulang dari Drive tiap startup)
+#   3. ../rag-knowledge/vectorstore (lokal)
+_IS_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+_LOCAL_PATH = str(BASE_DIR.parent / "rag-knowledge" / "vectorstore")
+CHROMA_DB_PATH = os.getenv("RAG_DB_PATH", "/tmp/vectorstore" if _IS_RAILWAY else _LOCAL_PATH)
+
 PROCESSED_LOG = str(Path(CHROMA_DB_PATH) / "processed_drive.json")
-CHUNK_SIZE = 500
+CHUNK_SIZE    = 500
 CHUNK_OVERLAP = 50
 
 def load_log() -> dict:
