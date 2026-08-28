@@ -96,30 +96,53 @@ RAG_SERVER_URL = os.getenv("RAG_SERVER_URL", "").rstrip("/")
 _WA_WHITELIST_RAW  = os.getenv("WA_WHITELIST", "")
 WA_WHITELIST       = [n.strip() for n in _WA_WHITELIST_RAW.split(",") if n.strip()]
 WA_ADMIN_CHAT_ID   = os.getenv("WA_ADMIN_CHAT_ID", "")
-WA_INVITE_CODE     = os.getenv("WA_INVITE_CODE", "").strip()   # kode undangan (kosong = nonaktif)
+WA_INVITE_CODE     = os.getenv("WA_INVITE_CODE", "").strip()
 _WA_ADMIN_RAW      = os.getenv("WA_ADMIN_NUMBERS", os.getenv("WA_OWNER_CHAT_ID", ""))
 WA_ADMIN_NUMBERS   = [n.strip() for n in _WA_ADMIN_RAW.split(",") if n.strip()]
 
-# Set nomor yang sudah terdaftar via kode undangan (in-memory, reset saat restart)
-# Di-seed dari WA_WHITELIST agar nomor static tetap bisa masuk
-_wa_approved_lock  = threading.Lock()
-_wa_approved_users : set = set(WA_WHITELIST)   # seed dari env var
+# ---------------------------------------------------------------------------
+# Persistent User Registry (SQLite)
+# ---------------------------------------------------------------------------
+# Approved users disimpan di SQLite agar tetap ada setelah Railway restart.
+# Di Railway: /data/users.db (Railway Volume)
+# Di lokal  : ./users.db
+try:
+    from features import user_registry as _ureg
+    _ureg.init_db()
+    # Seed awal: gabungan DB (persistent) + WA_WHITELIST (static env var)
+    _wa_approved_lock  = threading.Lock()
+    _wa_approved_users : set = _ureg.load_all_users() | set(WA_WHITELIST)
+    print(f"[UserRegistry] {len(_wa_approved_users)} user dimuat dari DB.", flush=True)
+    _REGISTRY_OK = True
+except Exception as _reg_err:
+    print(f"[UserRegistry] Gagal init: {_reg_err} — fallback ke in-memory", flush=True)
+    _wa_approved_lock  = threading.Lock()
+    _wa_approved_users : set = set(WA_WHITELIST)
+    _REGISTRY_OK = False
 
-def _wa_approve_user(chat_id: str):
-    """Tambahkan nomor ke daftar approved (in-memory)."""
+
+def _wa_approve_user(chat_id: str, name: str = "", added_by: str = "invite_code"):
+    """Tambahkan nomor ke approved set DAN simpan ke SQLite."""
     with _wa_approved_lock:
         _wa_approved_users.add(chat_id)
+    if _REGISTRY_OK:
+        _ureg.add_user(chat_id, name=name, added_by=added_by)
+
 
 def _wa_remove_user(chat_id: str):
-    """Hapus nomor dari daftar approved (in-memory)."""
+    """Hapus nomor dari approved set DAN hapus dari SQLite."""
     with _wa_approved_lock:
         _wa_approved_users.discard(chat_id)
+    if _REGISTRY_OK:
+        _ureg.remove_user(chat_id)
+
 
 def _wa_is_admin(chat_id: str) -> bool:
     """Cek apakah chat_id adalah admin."""
     if not WA_ADMIN_NUMBERS:
         return False
     return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
+
 
 # Legacy Twilio config
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -1043,8 +1066,8 @@ def _process_green_api(data):
         ).strip()
 
         if WA_INVITE_CODE and raw_text == WA_INVITE_CODE:
-            # Kode benar → daftarkan nomor ini
-            _wa_approve_user(chat_id)
+            # Kode benar → daftarkan nomor ini ke memory + SQLite
+            _wa_approve_user(chat_id, name=sender_name, added_by="invite_code")
             print(f"[Invite] Nomor terdaftar via kode: {chat_id} ({sender_name})", flush=True)
             green_api.send_message(chat_id, _msg.get_registered_message(sender_name))
             # Notif admin jika ada
@@ -1074,8 +1097,9 @@ def _process_green_api(data):
         if raw_admin_msg.startswith("/adduser "):
             target = raw_admin_msg[9:].strip().replace(" ", "").replace("+", "")
             target_id = target + "@c.us" if "@" not in target else target
-            _wa_approve_user(target_id)
-            green_api.send_message(chat_id, f"User {target_id} berhasil ditambahkan.")
+            _wa_approve_user(target_id, name="", added_by=chat_id)
+            total = _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users)
+            green_api.send_message(chat_id, f"User {target_id} berhasil ditambahkan. Total: {total} user.")
             return
         elif raw_admin_msg.startswith("/removeuser "):
             target = raw_admin_msg[12:].strip().replace(" ", "").replace("+", "")
@@ -1084,10 +1108,26 @@ def _process_green_api(data):
             green_api.send_message(chat_id, f"User {target_id} dihapus dari daftar.")
             return
         elif raw_admin_msg == "/listusers":
-            with _wa_approved_lock:
-                users = list(_wa_approved_users)
-            msg = f"*Daftar User Terdaftar ({len(users)}):*\n" + "\n".join(users) if users else "Belum ada user."
+            if _REGISTRY_OK:
+                users = _ureg.list_users()
+                if users:
+                    lines = [f"*Daftar User ({len(users)}):*"]
+                    for u in users:
+                        nm   = u.get('name') or '-'
+                        reg  = (u.get('registered') or '')[:10]
+                        lines.append(f"- {nm} | {reg}")
+                    msg = "\n".join(lines)
+                else:
+                    msg = "Belum ada user terdaftar."
+            else:
+                with _wa_approved_lock:
+                    users_list = list(_wa_approved_users)
+                msg = f"*Daftar User ({len(users_list)}):*\n" + "\n".join(users_list) if users_list else "Belum ada user."
             green_api.send_message(chat_id, msg)
+            return
+        elif raw_admin_msg == "/usercount":
+            total = _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users)
+            green_api.send_message(chat_id, f"Total user terdaftar: *{total}*")
             return
 
 
