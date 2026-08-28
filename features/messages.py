@@ -78,10 +78,10 @@ MAINTENANCE_MODE = os.getenv("WA_MAINTENANCE_MODE", "false").lower() == "true"
 def get_invite_prompt() -> str:
     """Pesan untuk user baru yang belum terdaftar (invite-only mode)."""
     return (
-        "Halo! 👋 Terima kasih sudah menghubungi *APRIS*.\n\n"
-        "Saat ini APRIS menggunakan sistem undangan. "
-        "Untuk mengaktifkan akses Anda, silakan kirim *kode undangan* yang Anda terima.\n\n"
-        "_Belum punya kode? Hubungi administrator APRIS._"
+        "Halo! 👋 Saya *APRIS*, asisten virtual berbasis AI.\n\n"
+        "Untuk menggunakan APRIS, Anda memerlukan *kode undangan*.\n\n"
+        "Silakan *balas pesan ini* dengan kode undangan yang Anda terima dari admin.\n\n"
+        "_Belum punya kode undangan? Hubungi administrator APRIS._"
     )
 
 def get_registered_message(name: str = "") -> str:

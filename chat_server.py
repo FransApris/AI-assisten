@@ -689,7 +689,6 @@ def _init_schedulers():
         threading.Thread(target=_run_drive_ingest, daemon=True, name="startup-ingest").start()
 
 
-
     # 3. Proactive Agent (kalender & obat)
     try:
         from features import proactive
@@ -705,6 +704,69 @@ def _init_schedulers():
         proactive.register_jobs(sched)
     except Exception as e:
         print(f"[Scheduler] Proactive error: {e}")
+
+    # 4. Salam pagi harian (WA_DAILY_GREETING=true, default: 06:00 WIB)
+    if os.getenv("WA_DAILY_GREETING", "false").lower() == "true":
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+
+            def _send_daily_greeting():
+                """Kirim salam pagi ke semua user terdaftar."""
+                try:
+                    from features import green_api as _ga2
+                    from datetime import date
+                    today = date.today().strftime("%A, %d %B %Y")
+                    # Hari dalam bahasa Indonesia
+                    days_id = {
+                        "Monday": "Senin", "Tuesday": "Selasa", "Wednesday": "Rabu",
+                        "Thursday": "Kamis", "Friday": "Jumat",
+                        "Saturday": "Sabtu", "Sunday": "Minggu"
+                    }
+                    months_id = {
+                        "January": "Januari", "February": "Februari", "March": "Maret",
+                        "April": "April", "May": "Mei", "June": "Juni",
+                        "July": "Juli", "August": "Agustus", "September": "September",
+                        "October": "Oktober", "November": "November", "December": "Desember"
+                    }
+                    for en, id_ in {**days_id, **months_id}.items():
+                        today = today.replace(en, id_)
+
+                    greeting = (
+                        f"Selamat pagi! ☀️\n\n"
+                        f"Hari ini *{today}*.\n\n"
+                        f"Saya *APRIS* siap membantu Anda hari ini. "
+                        f"Ada yang bisa saya bantu? 😊"
+                    )
+                    # Kirim ke semua user terdaftar
+                    if _REGISTRY_OK:
+                        targets = [u["chat_id"] for u in _ureg.list_users()]
+                    else:
+                        with _wa_approved_lock:
+                            targets = list(_wa_approved_users)
+
+                    sent = 0
+                    for cid in targets:
+                        try:
+                            _ga2.send_message(cid, greeting)
+                            sent += 1
+                        except Exception:
+                            pass
+                    print(f"[DailyGreeting] Salam pagi dikirim ke {sent}/{len(targets)} user", flush=True)
+                except Exception as eg:
+                    print(f"[DailyGreeting] Error: {eg}", flush=True)
+
+            # Jadwal: setiap hari pukul 06:00 WIB (UTC+7 = 23:00 UTC hari sebelumnya)
+            greeting_hour = int(os.getenv("WA_GREETING_HOUR", "6"))    # jam WIB
+            sched.add_job(
+                _send_daily_greeting,
+                trigger=CronTrigger(hour=greeting_hour, minute=0, timezone=TZ),
+                id="daily_greeting",
+                replace_existing=True,
+                name="Daily Morning Greeting",
+            )
+            print(f"[Scheduler] Salam pagi harian: pukul {greeting_hour:02d}:00 WIB", flush=True)
+        except Exception as e:
+            print(f"[Scheduler] Daily greeting error: {e}", flush=True)
 
 
 
@@ -1074,7 +1136,7 @@ def _process_green_api(data):
     # 🔒 Sistem Akses: Whitelist & Invite-Only
     sender_name = sender_data.get("senderName", "")
     if not _wa_is_whitelisted(chat_id):
-        # Cek apakah ini pesan untuk registrasi (kode undangan)
+        # Cek apakah ini pesan registrasi (kode undangan)
         raw_text = (
             data.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
             or data.get("messageData", {}).get("extendedTextMessageData", {}).get("text", "")
@@ -1089,18 +1151,12 @@ def _process_green_api(data):
             if WA_ADMIN_CHAT_ID:
                 green_api.send_message(WA_ADMIN_CHAT_ID,
                     f"[APRIS] User baru terdaftar:\n{sender_name} ({chat_id})")
-            return
-
-        elif WA_INVITE_CODE and raw_text:
-            # Ada teks tapi bukan kode yang benar
-            green_api.send_message(chat_id, _msg.get_invalid_code_message())
-            return
-
         else:
-            # Belum ada kode undangan → kirim prompt pendaftaran
+            # Belum terdaftar / kode salah → selalu tampilkan prompt undangan
+            # (jangan tampilkan 'kode salah' karena user mungkin belum tahu harus kirim kode)
             print(f"[Whitelist] Nomor belum terdaftar: {chat_id}", flush=True)
             green_api.send_message(chat_id, _msg.get_invite_prompt())
-            return
+        return
 
     # 👮 Perintah Admin (hanya untuk admin yang terdaftar di WA_ADMIN_NUMBERS)
     if _wa_is_admin(chat_id):
@@ -1227,10 +1283,17 @@ def _process_green_api(data):
         _lt_thread.join(timeout=2.0)   # tunggu max 2 detik (cache hit instan)
         sender_name = _lookup_result[0]
 
-    # 👋 Welcome message — kirim sekali untuk pengguna baru (session kosong)
+    # 👋 Welcome message — kirim sekali untuk pengguna baru
+    # Cek via session (in-memory) DAN user_registry (persistent)
     try:
-        history = get_or_create_session(chat_id)
+        history   = get_or_create_session(chat_id)
         is_new_user = (len(history) == 0)
+        # Jika session kosong tapi user sudah ada di registry lama,
+        # cek flag 'welcomed' di DB agar tidak kirim ulang saat Railway restart
+        if is_new_user and _REGISTRY_OK:
+            users_db = {u["chat_id"]: u for u in _ureg.list_users()}
+            if chat_id in users_db and users_db[chat_id].get("added_by") == "welcomed":
+                is_new_user = False   # sudah pernah disambut sebelumnya
     except Exception:
         is_new_user = False
 
@@ -1250,6 +1313,9 @@ def _process_green_api(data):
                     green_api.send_message(chat_id, welcome_msg)
                 except Exception:
                     pass
+        # Tandai sudah disambut di DB agar tidak kirim ulang setelah Railway restart
+        if _REGISTRY_OK:
+            _ureg.add_user(chat_id, name=sender_name, added_by="welcomed")
 
     # ✅ Acknowledgment segera
     try:
