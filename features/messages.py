@@ -211,6 +211,16 @@ def get_admin_cheatsheet() -> str:
         "• `/usercount`\n"
         "  _Jumlah total user terdaftar_\n\n"
 
+        "📊 *ANALITIK*\n"
+        "• `/stats` atau `/stats 30`\n"
+        "  _Laporan penggunaan 7 atau 30 hari terakhir_\n\n"
+
+        "📚 *KNOWLEDGE BASE*\n"
+        "• Kirim file PDF/TXT langsung ke chat ini\n"
+        "  _Dokumen otomatis ditambahkan ke knowledge base_\n\n"
+        "• `/ingest-kb`\n"
+        "  _Paksa re-ingest ulang dari Google Drive_\n\n"
+
         "🔧 *SISTEM*\n"
         "• `/maintenance on` / `/maintenance off`\n"
         "  _Aktifkan/nonaktifkan mode pemeliharaan_\n\n"

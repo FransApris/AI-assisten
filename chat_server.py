@@ -144,8 +144,36 @@ def _wa_is_admin(chat_id: str) -> bool:
     return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
 
 
+# ---------------------------------------------------------------------------
+# Long-term Memory Init
+# ---------------------------------------------------------------------------
+try:
+    from features import long_memory as _lmem
+    _lmem.init_db()
+    _LMEM_OK = True
+    print("[LongMemory] Aktif", flush=True)
+except Exception as _lmem_err:
+    print(f"[LongMemory] Nonaktif: {_lmem_err}", flush=True)
+    _LMEM_OK = False
+    _lmem    = None
+
+# ---------------------------------------------------------------------------
+# Analytics Init
+# ---------------------------------------------------------------------------
+try:
+    from features import analytics as _analytics
+    _analytics.init_db()
+    _ANALYTICS_OK = True
+    print("[Analytics] Aktif", flush=True)
+except Exception as _analytics_err:
+    print(f"[Analytics] Nonaktif: {_analytics_err}", flush=True)
+    _ANALYTICS_OK = False
+    _analytics    = None
+
+
 # Legacy Twilio config
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
+
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WA_FROM       = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 _WA_ALLOWED_RAW      = os.getenv("WHATSAPP_ALLOWED_NUMBERS", "")
@@ -1208,6 +1236,54 @@ def _process_green_api(data):
             status = "AKTIF — APRIS tidak akan menjawab user sementara." if mode_on else "NONAKTIF — APRIS kembali normal."
             green_api.send_message(chat_id, f"Mode pemeliharaan: *{status}*")
             return
+        elif raw_admin_msg in ("/stats", "/stats 7", "/stats 30"):
+            # Laporan analitik penggunaan
+            if _ANALYTICS_OK:
+                days = 30 if "30" in raw_admin_msg else 7
+                stats = _analytics.get_stats(days=days)
+                green_api.send_message(chat_id, _analytics.format_stats_message(stats))
+            else:
+                green_api.send_message(chat_id, "Modul analitik tidak aktif.")
+            return
+        elif raw_admin_msg == "/ingest-kb":
+            # Paksa re-ingest dari Google Drive
+            green_api.send_message(chat_id, "Memulai re-ingest knowledge base dari Google Drive...")
+            def _do_ingest():
+                try:
+                    from features import drive_ingest
+                    n = drive_ingest.ingest_drive_files()
+                    green_api.send_message(chat_id, f"Re-ingest selesai. +{n} chunk baru ke knowledge base.")
+                except Exception as e:
+                    green_api.send_message(chat_id, f"Re-ingest gagal: {e}")
+            threading.Thread(target=_do_ingest, daemon=True).start()
+            return
+
+    # 📄 Dokumen dari Admin → Update Knowledge Base
+    # Admin kirim file PDF/TXT → langsung diingest ke ChromaDB
+    if _wa_is_admin(chat_id) and msg_type in ("documentMessage", "imageMessage"):
+        download_url = msg_data.get("fileMessageData", {}).get("downloadUrl", "")
+        filename     = msg_data.get("fileMessageData", {}).get("fileName", "document.pdf")
+        caption      = msg_data.get("fileMessageData", {}).get("caption", "")
+        fname_lower  = filename.lower()
+
+        if download_url and fname_lower.endswith((".pdf", ".txt", ".md")):
+            green_api.send_message(chat_id,
+                f"Dokumen '{filename}' diterima. Memproses ke knowledge base...")
+            def _do_kb_update(_url=download_url, _fname=filename):
+                try:
+                    import requests as _req
+                    resp = _req.get(_url, timeout=60)
+                    resp.raise_for_status()
+                    from features import drive_ingest as _di
+                    result = _di.ingest_file_bytes(resp.content, _fname)
+                    green_api.send_message(chat_id, result["message"])
+                    # Log analytics
+                    if _ANALYTICS_OK:
+                        _analytics.log_event(chat_id, feature="kb_update", name=sender_name)
+                except Exception as e:
+                    green_api.send_message(chat_id, f"Gagal memproses dokumen: {e}")
+            threading.Thread(target=_do_kb_update, daemon=True).start()
+            return
 
     # 🔁 Dedup: abaikan webhook duplikat dari Green-API
     if msg_id and _wa_seen_msg(msg_id):
@@ -1324,14 +1400,47 @@ def _process_green_api(data):
         if _REGISTRY_OK:
             _ureg.add_user(chat_id, name=sender_name, added_by="welcomed")
 
+        # Inject memori jangka panjang ke session baru (jika ada)
+        if _LMEM_OK:
+            mem = _lmem.load_memory(chat_id)
+            mem_ctx = _lmem.build_memory_context(mem)
+            if mem_ctx:
+                history = get_or_create_session(chat_id)
+                history.insert(0, {
+                    "role"   : "system",
+                    "content": f"[Memori percakapan sebelumnya]\n{mem_ctx}",
+                    "time"   : "",
+                })
+                print(f"[LongMemory] Konteks dimuat untuk {chat_id}", flush=True)
+
     # 📋 Cheatsheet — deteksi kata kunci sebelum dikirim ke AI
     # Hemat token: tidak perlu memanggil Gemini untuk perintah ini
     if _msg.is_cheatsheet_request(user_msg):
         is_admin_caller = _wa_is_admin(chat_id)
         print(f"[Cheatsheet] Dikirim ke {chat_id} (admin={is_admin_caller})", flush=True)
         green_api.send_message(chat_id, _msg.get_full_cheatsheet(is_admin=is_admin_caller))
+        if _ANALYTICS_OK:
+            threading.Thread(
+                target=_analytics.log_event,
+                args=(chat_id,), kwargs={"feature": "cheatsheet", "name": sender_name},
+                daemon=True
+            ).start()
         return
 
+    # 📊 Log analytics untuk pesan chat biasa (non-blocking)
+    if _ANALYTICS_OK:
+        feature_tag = "chat"
+        if any(kw in user_msg.lower() for kw in ("jadwal", "kalender", "meeting", "acara")):
+            feature_tag = "calendar"
+        elif any(kw in user_msg.lower() for kw in ("obat", "minum", "dosis", "ingatkan")):
+            feature_tag = "reminder"
+        elif media_data:
+            feature_tag = "media"
+        threading.Thread(
+            target=_analytics.log_event,
+            args=(chat_id,), kwargs={"feature": feature_tag, "name": sender_name, "msg_len": len(user_msg)},
+            daemon=True
+        ).start()
 
     # ✅ Acknowledgment segera
     try:
@@ -1342,6 +1451,7 @@ def _process_green_api(data):
     # 2. Payload untuk /chat
     # Sertakan nama pengirim di pesan agar Gemini tahu konteks
     if sender_name:
+
         payload = {
             "message"    : user_msg or "[Kirim Media]",
             "session_id" : chat_id,
