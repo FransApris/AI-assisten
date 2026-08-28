@@ -890,6 +890,13 @@ def status():
         },
         "semantic_memory": {"entries": sem_count},
         "scheduler"     : {"running": _scheduler is not None and _scheduler.running if _scheduler else False},
+        "users"         : {
+            "registry_ok" : _REGISTRY_OK,
+            "db_path"     : _ureg.USERS_DB_PATH if _REGISTRY_OK else None,
+            "total"       : _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users),
+            "volume_ok"   : os.path.exists("/data") if os.getenv("RAILWAY_ENVIRONMENT") else None,
+        },
+        "invite_mode"   : bool(WA_INVITE_CODE),
     })
 
 
