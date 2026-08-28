@@ -87,10 +87,39 @@ RAG_ENABLED    = os.getenv("RAG_ENABLED", "true").lower() == "true"
 # Jika kosong → buka ChromaDB lokal langsung (mode lokal)
 RAG_SERVER_URL = os.getenv("RAG_SERVER_URL", "").rstrip("/")
 
-# WhatsApp / Green-API antisipasi config
-_WA_WHITELIST_RAW = os.getenv("WA_WHITELIST", "")       # kosong = semua nomor diizinkan
-WA_WHITELIST      = [n.strip() for n in _WA_WHITELIST_RAW.split(",") if n.strip()]
-WA_ADMIN_CHAT_ID  = os.getenv("WA_ADMIN_CHAT_ID", "")   # chat_id admin untuk notif error
+# ---------------------------------------------------------------------------
+# WhatsApp Multi-User Config
+# ---------------------------------------------------------------------------
+# WA_WHITELIST    : kosong = semua diizinkan | isi = hanya nomor ini (static)
+# WA_INVITE_CODE  : kode undangan untuk registrasi mandiri user baru
+# WA_ADMIN_NUMBERS: nomor admin yang bisa tambah/hapus user via WA command
+_WA_WHITELIST_RAW  = os.getenv("WA_WHITELIST", "")
+WA_WHITELIST       = [n.strip() for n in _WA_WHITELIST_RAW.split(",") if n.strip()]
+WA_ADMIN_CHAT_ID   = os.getenv("WA_ADMIN_CHAT_ID", "")
+WA_INVITE_CODE     = os.getenv("WA_INVITE_CODE", "").strip()   # kode undangan (kosong = nonaktif)
+_WA_ADMIN_RAW      = os.getenv("WA_ADMIN_NUMBERS", os.getenv("WA_OWNER_CHAT_ID", ""))
+WA_ADMIN_NUMBERS   = [n.strip() for n in _WA_ADMIN_RAW.split(",") if n.strip()]
+
+# Set nomor yang sudah terdaftar via kode undangan (in-memory, reset saat restart)
+# Di-seed dari WA_WHITELIST agar nomor static tetap bisa masuk
+_wa_approved_lock  = threading.Lock()
+_wa_approved_users : set = set(WA_WHITELIST)   # seed dari env var
+
+def _wa_approve_user(chat_id: str):
+    """Tambahkan nomor ke daftar approved (in-memory)."""
+    with _wa_approved_lock:
+        _wa_approved_users.add(chat_id)
+
+def _wa_remove_user(chat_id: str):
+    """Hapus nomor dari daftar approved (in-memory)."""
+    with _wa_approved_lock:
+        _wa_approved_users.discard(chat_id)
+
+def _wa_is_admin(chat_id: str) -> bool:
+    """Cek apakah chat_id adalah admin."""
+    if not WA_ADMIN_NUMBERS:
+        return False
+    return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
 
 # Legacy Twilio config
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -98,6 +127,7 @@ TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WA_FROM       = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 _WA_ALLOWED_RAW      = os.getenv("WHATSAPP_ALLOWED_NUMBERS", "")
 WA_ALLOWED_NUMBERS   = [n.strip() for n in _WA_ALLOWED_RAW.split(",") if n.strip()]
+
 
 
 # Timezone WIB (UTC+7) — fallback tanpa tzdata
@@ -273,10 +303,23 @@ def _wa_seen_msg(msg_id: str) -> bool:
 
 
 def _wa_is_whitelisted(chat_id: str) -> bool:
-    """Cek apakah chat_id diizinkan. Jika WA_WHITELIST kosong → semua diizinkan."""
-    if not WA_WHITELIST:
+    """
+    Cek apakah chat_id diizinkan mengakses APRIS.
+
+    Logika (prioritas berurutan):
+    1. Jika WA_WHITELIST dan WA_INVITE_CODE keduanya kosong → semua diizinkan (open access)
+    2. Admin selalu diizinkan
+    3. Cek _wa_approved_users (gabungan WA_WHITELIST + registrasi kode undangan)
+    """
+    # Open access: tidak ada whitelist static dan tidak ada kode undangan
+    if not WA_WHITELIST and not WA_INVITE_CODE:
         return True
-    return any(chat_id.startswith(n) or n in chat_id for n in WA_WHITELIST)
+    # Admin selalu diizinkan
+    if _wa_is_admin(chat_id):
+        return True
+    # Cek approved set (whitelist static + yang sudah daftar via kode)
+    with _wa_approved_lock:
+        return chat_id in _wa_approved_users
 
 
 def _wa_notify_admin(subject: str, detail: str):
@@ -990,11 +1033,63 @@ def _process_green_api(data):
         green_api.send_message(chat_id, _msg.MAINTENANCE_TEXT)
         return
 
-    # 🔒 Whitelist: tolak nomor yang tidak terdaftar
+    # 🔒 Sistem Akses: Whitelist & Invite-Only
+    sender_name = sender_data.get("senderName", "")
     if not _wa_is_whitelisted(chat_id):
-        print(f"[Whitelist] Nomor ditolak: {chat_id}", flush=True)
-        green_api.send_message(chat_id, _msg.WHITELIST_BLOCKED)
-        return
+        # Cek apakah ini pesan untuk registrasi (kode undangan)
+        raw_text = (
+            data.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
+            or data.get("messageData", {}).get("extendedTextMessageData", {}).get("text", "")
+        ).strip()
+
+        if WA_INVITE_CODE and raw_text == WA_INVITE_CODE:
+            # Kode benar → daftarkan nomor ini
+            _wa_approve_user(chat_id)
+            print(f"[Invite] Nomor terdaftar via kode: {chat_id} ({sender_name})", flush=True)
+            green_api.send_message(chat_id, _msg.get_registered_message(sender_name))
+            # Notif admin jika ada
+            if WA_ADMIN_CHAT_ID:
+                green_api.send_message(WA_ADMIN_CHAT_ID,
+                    f"[APRIS] User baru terdaftar:\n{sender_name} ({chat_id})")
+            return
+
+        elif WA_INVITE_CODE and raw_text:
+            # Ada teks tapi bukan kode yang benar
+            green_api.send_message(chat_id, _msg.get_invalid_code_message())
+            return
+
+        else:
+            # Belum ada kode undangan → kirim prompt pendaftaran
+            print(f"[Whitelist] Nomor belum terdaftar: {chat_id}", flush=True)
+            green_api.send_message(chat_id, _msg.get_invite_prompt())
+            return
+
+    # 👮 Perintah Admin (hanya untuk admin yang terdaftar di WA_ADMIN_NUMBERS)
+    if _wa_is_admin(chat_id):
+        raw_admin_msg = (
+            data.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
+            or data.get("messageData", {}).get("extendedTextMessageData", {}).get("text", "")
+        ).strip()
+
+        if raw_admin_msg.startswith("/adduser "):
+            target = raw_admin_msg[9:].strip().replace(" ", "").replace("+", "")
+            target_id = target + "@c.us" if "@" not in target else target
+            _wa_approve_user(target_id)
+            green_api.send_message(chat_id, f"User {target_id} berhasil ditambahkan.")
+            return
+        elif raw_admin_msg.startswith("/removeuser "):
+            target = raw_admin_msg[12:].strip().replace(" ", "").replace("+", "")
+            target_id = target + "@c.us" if "@" not in target else target
+            _wa_remove_user(target_id)
+            green_api.send_message(chat_id, f"User {target_id} dihapus dari daftar.")
+            return
+        elif raw_admin_msg == "/listusers":
+            with _wa_approved_lock:
+                users = list(_wa_approved_users)
+            msg = f"*Daftar User Terdaftar ({len(users)}):*\n" + "\n".join(users) if users else "Belum ada user."
+            green_api.send_message(chat_id, msg)
+            return
+
 
     # 🔁 Dedup: abaikan webhook duplikat dari Green-API
     if msg_id and _wa_seen_msg(msg_id):

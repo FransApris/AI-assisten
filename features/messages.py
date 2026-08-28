@@ -10,14 +10,20 @@ import os
 # Welcome / Onboarding (pengguna baru pertama kali chat)
 # ---------------------------------------------------------------------------
 WELCOME_ID_TEXT = (
-    "Halo! Saya *APRIS* (Adaptive Personal Response & Intelligent System). ⚡\n\n"
-    "Siap bantu produktivitas harian, diskusi teknis, coding, riset, atau perapian draf tulisan.\n\n"
-    "Ada yang bisa saya bantu sekarang? Kirim saja instruksi atau detail tugas Anda."
+    "Halo! Saya *APRIS* — asisten virtual berbasis AI yang siap membantu Anda. 👋\n\n"
+    "Saya bisa membantu dengan:\n"
+    "- Pertanyaan & riset informasi\n"
+    "- Produktivitas & manajemen tugas\n"
+    "- Coding & debugging\n"
+    "- Penulisan & ringkasan dokumen\n"
+    "- Dan banyak lagi!\n\n"
+    "Langsung ketik pertanyaan atau instruksi Anda, saya siap membantu! 💡"
 )
 
 WELCOME_EN_TEXT = (
-    "Hi there! I'm *APRIS*, your AI companion for smart workflows, technical problem-solving, and everyday tasks. ⚡\n\n"
-    "Drop your question, task, or context below, and let's get it done."
+    "Hi there! I'm *APRIS*, your AI assistant ready to help. 👋\n\n"
+    "I can assist with research, productivity, coding, writing, and much more.\n\n"
+    "Just type your question or task below — let's get it done! 💡"
 )
 
 WELCOME_MENU_TEXT = (
@@ -47,11 +53,11 @@ def get_welcome_message() -> str:
 # ---------------------------------------------------------------------------
 def get_ack_message(sender_name: str = "") -> str:
     name_part = f" {sender_name.split()[0]}," if sender_name else ""
-    return f"⏳ _Halo{name_part} pesan diterima. APRIS sedang memproses..._"
+    return f"_Halo{name_part} pesan diterima. APRIS sedang memproses..._"
 
 
 def get_progress_message() -> str:
-    return "⚙️ _Sedang memproses dan menganalisis... Sebentar ya._"
+    return "_Sedang memproses dan menganalisis... Sebentar ya._"
 
 
 # ---------------------------------------------------------------------------
@@ -67,12 +73,37 @@ MAINTENANCE_MODE = os.getenv("WA_MAINTENANCE_MODE", "false").lower() == "true"
 
 
 # ---------------------------------------------------------------------------
-# Whitelist / Flood
+# Whitelist / Invite / Flood
 # ---------------------------------------------------------------------------
-WHITELIST_BLOCKED = "🚫 Maaf, nomor Anda tidak terdaftar untuk menggunakan APRIS."
+def get_invite_prompt() -> str:
+    """Pesan untuk user baru yang belum terdaftar (invite-only mode)."""
+    return (
+        "Halo! 👋 Terima kasih sudah menghubungi *APRIS*.\n\n"
+        "Saat ini APRIS menggunakan sistem undangan. "
+        "Untuk mengaktifkan akses Anda, silakan kirim *kode undangan* yang Anda terima.\n\n"
+        "_Belum punya kode? Hubungi administrator APRIS._"
+    )
+
+def get_registered_message(name: str = "") -> str:
+    """Pesan konfirmasi setelah user berhasil daftar."""
+    name_part = f" *{name.split()[0]}*" if name else ""
+    return (
+        f"Selamat datang{name_part}! Akses Anda telah diaktifkan. ✅\n\n"
+        "Saya *APRIS*, asisten virtual AI Anda. Langsung ketik pertanyaan "
+        "atau instruksi pertama Anda!"
+    )
+
+def get_invalid_code_message() -> str:
+    """Pesan saat kode undangan salah."""
+    return (
+        "Kode undangan tidak valid. Silakan periksa kembali kode Anda dan coba lagi. ❌\n\n"
+        "_Butuh bantuan? Hubungi administrator APRIS._"
+    )
+
+WHITELIST_BLOCKED = "Maaf, nomor Anda belum terdaftar untuk menggunakan APRIS."
 FLOOD_WARNING = (
-    "⚠️ _Terlalu banyak pesan dalam waktu singkat. "
-    "Mohon tunggu beberapa menit sebelum mengirim lagi._"
+    "Terlalu banyak pesan dalam waktu singkat. "
+    "Mohon tunggu beberapa menit sebelum mengirim lagi."
 )
 
 
