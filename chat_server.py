@@ -621,6 +621,19 @@ def _sse_push(event_type: str, message: str):
             _sse_clients.remove(q)
 
 
+def _run_drive_ingest():
+    """
+    Fungsi ingest Google Drive ke ChromaDB.
+    HARUS berada di level modul (bukan nested) agar APScheduler
+    bisa men-serialize referensinya ke SQLite job store.
+    """
+    try:
+        from features import drive_ingest
+        drive_ingest.ingest_drive_files()
+    except Exception as e:
+        print(f"[DriveIngest] Error: {e}", flush=True)
+
+
 def _get_scheduler():
     """Lazy-init APScheduler. Jalankan sekali saat pertama kali diperlukan."""
     global _scheduler
@@ -655,31 +668,26 @@ def _init_schedulers():
         return
 
     # 1. Auto-ingest Google Drive setiap 6 jam
+    # PENTING: gunakan referensi string 'chat_server:_run_drive_ingest'
+    # atau fungsi level-modul agar APScheduler bisa serialize ke SQLite.
     try:
         from apscheduler.triggers.interval import IntervalTrigger
-        def _run_drive_ingest():
-            try:
-                from features import drive_ingest
-                drive_ingest.ingest_drive_files()
-            except Exception as e2:
-                print(f"[DriveIngest] Error: {e2}")
         sched.add_job(
-            _run_drive_ingest,
+            _run_drive_ingest,          # fungsi level modul — bisa di-serialize
             trigger=IntervalTrigger(hours=6),
             id="auto_drive_ingest",
             replace_existing=True,
             name="Auto Drive Ingest",
         )
-        print("[Scheduler] Drive auto-ingest: setiap 6 jam", flush=True)
-
-        # Di Railway: jalankan ingest sekali langsung saat startup
-        # agar vectorstore terisi dari Google Drive sebelum request pertama masuk
-        if os.getenv("RAILWAY_ENVIRONMENT"):
-            print("[DriveIngest] Railway detected — menjalankan ingest awal dari Google Drive...", flush=True)
-            threading.Thread(target=_run_drive_ingest, daemon=True, name="startup-ingest").start()
-
+        print("[Scheduler] Drive auto-ingest terdaftar: setiap 6 jam", flush=True)
     except Exception as e:
-        print(f"[Scheduler] Drive ingest error: {e}")
+        print(f"[Scheduler] Gagal daftarkan drive ingest job: {e}", flush=True)
+
+    # Startup ingest — pisahkan dari scheduler agar selalu jalan meski job gagal didaftarkan
+    if os.getenv("RAILWAY_ENVIRONMENT"):
+        print("[DriveIngest] Railway startup — menjalankan ingest awal dari Google Drive...", flush=True)
+        threading.Thread(target=_run_drive_ingest, daemon=True, name="startup-ingest").start()
+
 
 
     # 3. Proactive Agent (kalender & obat)
