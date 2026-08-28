@@ -1200,7 +1200,14 @@ def _process_green_api(data):
             total = _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users)
             green_api.send_message(chat_id, f"Total user terdaftar: *{total}*")
             return
-
+        elif raw_admin_msg in ("/maintenance on", "/maintenance off"):
+            import features.messages as _msg_mod
+            mode_on = raw_admin_msg.endswith("on")
+            os.environ["WA_MAINTENANCE_MODE"] = "true" if mode_on else "false"
+            _msg_mod.MAINTENANCE_MODE = mode_on
+            status = "AKTIF — APRIS tidak akan menjawab user sementara." if mode_on else "NONAKTIF — APRIS kembali normal."
+            green_api.send_message(chat_id, f"Mode pemeliharaan: *{status}*")
+            return
 
     # 🔁 Dedup: abaikan webhook duplikat dari Green-API
     if msg_id and _wa_seen_msg(msg_id):
@@ -1320,9 +1327,11 @@ def _process_green_api(data):
     # 📋 Cheatsheet — deteksi kata kunci sebelum dikirim ke AI
     # Hemat token: tidak perlu memanggil Gemini untuk perintah ini
     if _msg.is_cheatsheet_request(user_msg):
-        print(f"[Cheatsheet] Dikirim ke {chat_id}", flush=True)
-        green_api.send_message(chat_id, _msg.get_cheatsheet())
+        is_admin_caller = _wa_is_admin(chat_id)
+        print(f"[Cheatsheet] Dikirim ke {chat_id} (admin={is_admin_caller})", flush=True)
+        green_api.send_message(chat_id, _msg.get_full_cheatsheet(is_admin=is_admin_caller))
         return
+
 
     # ✅ Acknowledgment segera
     try:

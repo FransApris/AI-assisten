@@ -148,7 +148,7 @@ CHEATSHEET_TRIGGERS = {"catatan", "bantuan", "help", "panduan", "perintah", "?",
 
 def get_cheatsheet() -> str:
     """
-    Kembalikan daftar perintah dan kemampuan APRIS via WhatsApp.
+    Daftar perintah dan kemampuan APRIS untuk user biasa.
     Ditampilkan saat user mengetik: catatan / bantuan / help / ?
     """
     return (
@@ -188,6 +188,47 @@ def get_cheatsheet() -> str:
 
         "_Ketik langsung apa yang Anda butuhkan — tidak perlu format khusus!_ 😊"
     )
+
+
+def get_admin_cheatsheet() -> str:
+    """
+    Tambahan catatan khusus admin — perintah manajemen user & sistem.
+    Ditampilkan otomatis setelah get_cheatsheet() jika pengirim adalah admin.
+    """
+    return (
+        "\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👮 *PERINTAH ADMIN*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        "👥 *MANAJEMEN USER*\n"
+        "• `/adduser +62812xxxx`\n"
+        "  _Tambah user manual ke daftar (disimpan ke DB)_\n\n"
+        "• `/removeuser +62812xxxx`\n"
+        "  _Hapus user dari daftar (dihapus dari DB)_\n\n"
+        "• `/listusers`\n"
+        "  _Lihat semua user: nama + tanggal daftar_\n\n"
+        "• `/usercount`\n"
+        "  _Jumlah total user terdaftar_\n\n"
+
+        "🔧 *SISTEM*\n"
+        "• `/maintenance on` / `/maintenance off`\n"
+        "  _Aktifkan/nonaktifkan mode pemeliharaan_\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "_Perintah admin hanya terlihat oleh Anda._ 🔐"
+    )
+
+
+def get_full_cheatsheet(is_admin: bool = False) -> str:
+    """
+    Kembalikan cheatsheet lengkap.
+    Admin mendapat tambahan bagian perintah admin.
+    """
+    base = get_cheatsheet()
+    if is_admin:
+        return base + get_admin_cheatsheet()
+    return base
 
 
 def is_cheatsheet_request(text: str) -> bool:
