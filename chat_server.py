@@ -1242,7 +1242,69 @@ def _process_green_api(data):
         user_msg = msg_data.get("textMessageData", {}).get("textMessage", "")
     elif msg_type == "extendedTextMessage":
         user_msg = msg_data.get("extendedTextMessageData", {}).get("text", "")
-    elif msg_type in ["imageMessage", "documentMessage", "audioMessage", "videoMessage"]:
+    elif msg_type == "documentMessage":
+        # 📄 Dokumen — PDF & teks diekstrak, bukan dikirim sebagai base64
+        user_msg     = msg_data.get("fileMessageData", {}).get("caption", "")
+        download_url = msg_data.get("fileMessageData", {}).get("downloadUrl", "")
+        filename     = msg_data.get("fileMessageData", {}).get("fileName", "document")
+        mime_type    = msg_data.get("fileMessageData", {}).get("mimeType", "")
+        fname_lower  = filename.lower()
+
+        if download_url:
+            try:
+                import requests as _req
+                import io
+                resp = _req.get(download_url, timeout=60)
+                resp.raise_for_status()
+                file_bytes = resp.content
+
+                if fname_lower.endswith(".pdf") or "pdf" in mime_type:
+                    # PDF → ekstrak teks dengan PyPDF2
+                    from PyPDF2 import PdfReader
+                    reader     = PdfReader(io.BytesIO(file_bytes))
+                    pages_text = []
+                    for i, page in enumerate(reader.pages, 1):
+                        txt = page.extract_text() or ""
+                        if txt.strip():
+                            pages_text.append(f"[Halaman {i}]\n{txt.strip()}")
+                    extracted = "\n\n".join(pages_text)
+                    total_chars = len(extracted)
+                    # Potong jika terlalu panjang (maks ~12.000 char untuk context window)
+                    if total_chars > 12000:
+                        extracted = extracted[:12000] + f"\n\n_...(dipotong, total {total_chars} karakter)_"
+                    if extracted.strip():
+                        user_msg = (
+                            f"[Dokumen PDF diterima: *{filename}* — {len(reader.pages)} halaman]\n\n"
+                            f"{user_msg + chr(10) if user_msg else ''}"
+                            f"Isi dokumen:\n```\n{extracted}\n```"
+                        )
+                        print(f"[DocPDF] '{filename}' diekstrak: {total_chars} char", flush=True)
+                    else:
+                        user_msg += f"\n[Sistem: PDF '{filename}' tidak memiliki teks yang bisa diekstrak (mungkin berupa gambar/scan)]"
+
+                elif fname_lower.endswith((".txt", ".md", ".csv", ".json")):
+                    # Teks biasa → decode langsung
+                    text_content = file_bytes.decode("utf-8", errors="ignore")
+                    if len(text_content) > 12000:
+                        text_content = text_content[:12000] + "\n\n_(dipotong)_"
+                    user_msg = (
+                        f"[Dokumen teks diterima: *{filename}*]\n\n"
+                        f"{user_msg + chr(10) if user_msg else ''}"
+                        f"Isi dokumen:\n```\n{text_content}\n```"
+                    )
+
+                else:
+                    # Tipe file lain — coba kirim sebagai base64 ke Gemini
+                    media_data = green_api.media_to_base64(download_url, mime_type)
+                    if not user_msg:
+                        user_msg = f"[File diterima: {filename}]"
+
+            except Exception as e:
+                print(f"[DocHandler] Gagal memproses '{filename}': {e}", flush=True)
+                user_msg += f"\n[Sistem: Gagal membaca dokumen '{filename}': {e}]"
+
+    elif msg_type in ["imageMessage", "audioMessage", "videoMessage"]:
+        # 🖼️ Gambar/audio/video → base64 ke Gemini Vision
         user_msg     = msg_data.get("fileMessageData", {}).get("caption", "")
         download_url = msg_data.get("fileMessageData", {}).get("downloadUrl", "")
         mime_type    = msg_data.get("fileMessageData", {}).get("mimeType", "")
