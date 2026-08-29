@@ -101,6 +101,17 @@ _WA_ADMIN_RAW      = os.getenv("WA_ADMIN_NUMBERS", os.getenv("WA_OWNER_CHAT_ID",
 WA_ADMIN_NUMBERS   = [n.strip() for n in _WA_ADMIN_RAW.split(",") if n.strip()]
 
 # ---------------------------------------------------------------------------
+# Module-level defaults — diperlukan agar linter (Pyrefly) tidak error
+# Nilai aktual di-set di try/except block di bawah (jika modul tersedia)
+# ---------------------------------------------------------------------------
+_REGISTRY_OK  : bool = False
+_LMEM_OK      : bool = False
+_ANALYTICS_OK : bool = False
+_lmem         = None   # type: ignore[assignment]  # features.long_memory
+_analytics    = None   # type: ignore[assignment]  # features.analytics
+_ureg         = None   # type: ignore[assignment]  # features.user_registry
+
+# ---------------------------------------------------------------------------
 # Persistent User Registry (SQLite)
 # ---------------------------------------------------------------------------
 # Approved users disimpan di SQLite agar tetap ada setelah Railway restart.
