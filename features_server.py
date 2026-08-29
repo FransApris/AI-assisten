@@ -60,11 +60,11 @@ FEATURES_STATUS = {
 
 def _check_features():
     """Cek fitur mana yang tersedia (dependensi terinstall)."""
-    try:
-        import whisper; from gtts import gTTS
+    import importlib.util
+    # whisper & gtts adalah dependensi opsional (voice/TTS) — tidak perlu diinstall lokal
+    if (importlib.util.find_spec("whisper") is not None and
+            importlib.util.find_spec("gtts") is not None):
         FEATURES_STATUS["voice"] = True
-    except ImportError:
-        pass
     try:
         from google import genai
         FEATURES_STATUS["vision"] = True

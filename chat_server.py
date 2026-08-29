@@ -1243,7 +1243,7 @@ def _process_green_api(data):
     elif msg_type == "extendedTextMessage":
         user_msg = msg_data.get("extendedTextMessageData", {}).get("text", "")
     elif msg_type == "documentMessage":
-        # 📄 Dokumen — PDF & teks diekstrak, bukan dikirim sebagai base64
+        # 📄 Dokumen — PDF dengan auto-fallback OCR untuk scan/gambar
         user_msg     = msg_data.get("fileMessageData", {}).get("caption", "")
         download_url = msg_data.get("fileMessageData", {}).get("downloadUrl", "")
         filename     = msg_data.get("fileMessageData", {}).get("fileName", "document")
@@ -1252,38 +1252,46 @@ def _process_green_api(data):
 
         if download_url:
             try:
-                import requests as _req
-                import io
+                import requests as _req, io
                 resp = _req.get(download_url, timeout=60)
                 resp.raise_for_status()
                 file_bytes = resp.content
 
                 if fname_lower.endswith(".pdf") or "pdf" in mime_type:
-                    # PDF → ekstrak teks dengan PyPDF2
-                    from PyPDF2 import PdfReader
-                    reader     = PdfReader(io.BytesIO(file_bytes))
-                    pages_text = []
-                    for i, page in enumerate(reader.pages, 1):
-                        txt = page.extract_text() or ""
-                        if txt.strip():
-                            pages_text.append(f"[Halaman {i}]\n{txt.strip()}")
-                    extracted = "\n\n".join(pages_text)
-                    total_chars = len(extracted)
-                    # Potong jika terlalu panjang (maks ~12.000 char untuk context window)
-                    if total_chars > 12000:
-                        extracted = extracted[:12000] + f"\n\n_...(dipotong, total {total_chars} karakter)_"
-                    if extracted.strip():
-                        user_msg = (
-                            f"[Dokumen PDF diterima: *{filename}* — {len(reader.pages)} halaman]\n\n"
-                            f"{user_msg + chr(10) if user_msg else ''}"
-                            f"Isi dokumen:\n```\n{extracted}\n```"
-                        )
-                        print(f"[DocPDF] '{filename}' diekstrak: {total_chars} char", flush=True)
+                    # 🔍 PDF — coba ekstrak teks, fallback ke OCR jika scan
+                    from features import pdf_ocr as _pocr
+                    # Beri tahu user bahwa sedang diproses
+                    green_api.send_message(chat_id,
+                        f"📄 Memproses *{filename}*... _(mohon tunggu sebentar)_")
+
+                    # Dapatkan Gemini client untuk OCR
+                    _ocr_client = None
+                    try:
+                        from google import genai as _genai
+                        _ocr_client = _genai.Client(api_key=GEMINI_API_KEY)
+                    except Exception:
+                        pass
+
+                    result = _pocr.extract_pdf_text(
+                        file_bytes, filename=filename, gemini_client=_ocr_client
+                    )
+
+                    if result["error"]:
+                        user_msg += f"\n[Sistem: {result['error']}]"
                     else:
-                        user_msg += f"\n[Sistem: PDF '{filename}' tidak memiliki teks yang bisa diekstrak (mungkin berupa gambar/scan)]"
+                        method_label = {
+                            "pypdf2"    : "teks digital",
+                            "gemini_ocr": "OCR (scan dikenali AI ✨)",
+                        }.get(result["method"], result["method"])
+                        trunc_note = " _(dipotong, dokumen terlalu panjang)_" if result["truncated"] else ""
+                        user_msg = (
+                            f"[PDF: *{filename}* | {result['pages']} hlm | {method_label}{trunc_note}]\n\n"
+                            f"{user_msg + chr(10) if user_msg else ''}"
+                            f"Isi dokumen:\n```\n{result['text']}\n```"
+                        )
+                        print(f"[DocPDF] '{filename}': {result['chars']} char via {result['method']}", flush=True)
 
                 elif fname_lower.endswith((".txt", ".md", ".csv", ".json")):
-                    # Teks biasa → decode langsung
                     text_content = file_bytes.decode("utf-8", errors="ignore")
                     if len(text_content) > 12000:
                         text_content = text_content[:12000] + "\n\n_(dipotong)_"
@@ -1292,9 +1300,7 @@ def _process_green_api(data):
                         f"{user_msg + chr(10) if user_msg else ''}"
                         f"Isi dokumen:\n```\n{text_content}\n```"
                     )
-
                 else:
-                    # Tipe file lain — coba kirim sebagai base64 ke Gemini
                     media_data = green_api.media_to_base64(download_url, mime_type)
                     if not user_msg:
                         user_msg = f"[File diterima: {filename}]"
@@ -1302,6 +1308,7 @@ def _process_green_api(data):
             except Exception as e:
                 print(f"[DocHandler] Gagal memproses '{filename}': {e}", flush=True)
                 user_msg += f"\n[Sistem: Gagal membaca dokumen '{filename}': {e}]"
+
 
     elif msg_type in ["imageMessage", "audioMessage", "videoMessage"]:
         # 🖼️ Gambar/audio/video → base64 ke Gemini Vision

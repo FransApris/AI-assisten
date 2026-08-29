@@ -18,8 +18,9 @@ tzdata>=2024.1
 # RAG & Semantic Memory (ChromaDB)
 chromadb>=0.5.0
 
-# PDF Parsing (untuk Drive Ingest)
-PyPDF2>=3.0.0
+# PDF Parsing & OCR
+PyPDF2>=3.0.0          # ekstrak teks dari PDF digital
+pymupdf>=1.24.0        # render PDF scan ke gambar untuk OCR via Gemini Vision
 
 # Web Scraping
 beautifulsoup4>=4.12.0
