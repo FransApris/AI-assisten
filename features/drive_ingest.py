@@ -212,97 +212,180 @@ def ingest_drive_files():
     return total_added
 
 
+def get_chroma_collection():
+    """Mengembalikan objek koleksi ChromaDB."""
+    Path(CHROMA_DB_PATH).mkdir(parents=True, exist_ok=True)
+    chroma = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    return chroma.get_or_create_collection(name=CHROMA_COLLECTION, metadata={"hnsw:space": "cosine"})
+
+
 def ingest_file_bytes(file_bytes: bytes, filename: str) -> dict:
     """
-    Ingest file dari bytes (misalnya dari dokumen yang dikirim via WhatsApp).
-    Mendukung PDF (.pdf) dan teks biasa (.txt, .md).
-
-    Args:
-        file_bytes: isi file dalam bytes
-        filename: nama file (untuk metadata dan deteksi tipe)
-
-    Returns:
-        dict: {'success': bool, 'chunks': int, 'message': str}
+    Ingest file bytes secara langsung (upload dari WA).
+    Mengembalikan dict berisi pesan status.
     """
-    import io
-    fname_lower = filename.lower()
+    if not GEMINI_API_KEY:
+        return {"success": False, "message": "Gagal ingest: GEMINI_API_KEY tidak dikonfigurasi"}
 
-    # Ekstrak teks dari file
+    fname_lower = filename.lower()
     text = ""
+    
     try:
         if fname_lower.endswith(".pdf"):
-            from PyPDF2 import PdfReader
-            reader = PdfReader(io.BytesIO(file_bytes))
-            pages  = [p.extract_text() or "" for p in reader.pages]
-            text   = "\n".join(pages).strip()
-        elif fname_lower.endswith((".txt", ".md", ".csv")):
-            text = file_bytes.decode("utf-8", errors="ignore").strip()
+            from features.pdf_ocr import extract_pdf_text
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            res = extract_pdf_text(file_bytes, filename, gemini_client=client)
+            if res.get("error"):
+                return {"success": False, "message": f"Gagal baca PDF: {res['error']}"}
+            text = res.get("text", "")
+        elif fname_lower.endswith((".txt", ".md", ".csv", ".json")):
+            text = file_bytes.decode("utf-8", errors="ignore")
         else:
-            return {"success": False, "chunks": 0,
-                    "message": f"Tipe file tidak didukung: {filename}. Gunakan PDF, TXT, atau MD."}
-
-        if not text:
-            return {"success": False, "chunks": 0,
-                    "message": f"File '{filename}' kosong atau tidak bisa dibaca."}
-
+            return {"success": False, "message": f"Tipe file tidak didukung untuk KB: {filename}"}
     except Exception as e:
-        return {"success": False, "chunks": 0,
-                "message": f"Gagal membaca file: {e}"}
+        return {"success": False, "message": f"Gagal mengekstrak teks: {e}"}
 
-    # Chunk teks
+    if not text.strip():
+        return {"success": False, "message": f"Dokumen kosong atau teks tidak bisa dibaca: {filename}"}
+
     chunks = chunk_text(text)
     if not chunks:
-        return {"success": False, "chunks": 0,
-                "message": "Tidak ada konten yang bisa diekstrak dari file."}
+        return {"success": False, "message": f"Dokumen terlalu pendek untuk masuk KB: {filename}"}
 
-    # Simpan ke ChromaDB
     try:
-        col    = get_chroma_collection()
-        client = get_gemini_client()
-        import hashlib, time
-        fid    = "wa_" + hashlib.md5(file_bytes).hexdigest()[:12]
-        added  = 0
-        BATCH  = 5
+        col = get_chroma_collection()
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
+        # Hapus versi lama jika ada
+        try:
+            existing = col.get(where={"source": filename})
+            if existing["ids"]:
+                col.delete(ids=existing["ids"])
+        except Exception:
+            pass
 
+        # Embed dan Ingest
+        BATCH = 10
+        added = 0
         for i in range(0, len(chunks), BATCH):
-            batch = chunks[i:i + BATCH]
-            try:
-                result = client.models.embed_content(model=EMBEDDING_MODEL, contents=batch)
-                vecs   = [e.values for e in result.embeddings]
-                ids    = [f"{fid}_{i+j}" for j in range(len(batch))]
-                metas  = [{"source": filename, "chunk": i+j, "type": "wa_upload"} for j in range(len(batch))]
-                col.add(embeddings=vecs, documents=batch, ids=ids, metadatas=metas)
-                added += len(batch)
-                time.sleep(0.3)   # rate limit Gemini
-            except Exception as e:
-                print(f"[IngestWA] batch {i} error: {e}", flush=True)
+            batch = chunks[i:i+BATCH]
+            result = client.models.embed_content(model=EMBEDDING_MODEL, contents=batch)
+            vecs = [e.values for e in result.embeddings]
+            import hashlib
+            ids = [f"wa_{hashlib.md5(filename.encode()).hexdigest()[:6]}_{i+j}" for j in range(len(batch))]
+            metas = [{"source": filename, "chunk": i+j, "type": "wa_upload"} for j in range(len(batch))]
+            col.add(embeddings=vecs, documents=batch, ids=ids, metadatas=metas)
+            added += len(batch)
 
-        total_now = col.count()
-        print(f"[IngestWA] '{filename}': +{added} chunk | Total DB: {total_now}", flush=True)
+        return {"success": True, "message": f"✅ Berhasil ingest *{filename}* (+{added} chunk)"}
+    
+    except Exception as e:
+        return {"success": False, "message": f"Gagal menyimpan ke DB: {e}"}
+
+
+def get_kb_status() -> dict:
+    """
+    Ambil statistik knowledge base dari ChromaDB.
+    Digunakan oleh admin command /kb-status.
+
+    Returns dict:
+        {
+          "total_chunks": int,
+          "sources": [{"name": str, "chunks": int, "type": str}],
+          "drive_files": int,   # jumlah file dari Google Drive
+          "wa_files": int,      # jumlah file yang diupload via WA
+          "error": str | None,
+        }
+    """
+    try:
+        col = get_chroma_collection()
+        total = col.count()
+
+        if total == 0:
+            return {
+                "total_chunks": 0,
+                "sources"     : [],
+                "drive_files" : 0,
+                "wa_files"    : 0,
+                "error"       : None,
+            }
+
+        # Ambil semua metadata (batasi 2000 untuk performa)
+        result   = col.get(limit=min(total, 2000), include=["metadatas"])
+        metas    = result.get("metadatas", [])
+
+        # Hitung per sumber
+        source_counts: dict = {}
+        source_types : dict = {}
+        for m in metas:
+            src  = m.get("source", "unknown")
+            typ  = m.get("type", "unknown")
+            source_counts[src]  = source_counts.get(src, 0) + 1
+            source_types[src]   = typ
+
+        # Urutkan: terbanyak chunk di atas
+        sources = sorted(
+            [
+                {"name": src, "chunks": cnt, "type": source_types.get(src, "?")}
+                for src, cnt in source_counts.items()
+            ],
+            key=lambda x: x["chunks"],
+            reverse=True,
+        )
+
+        drive_files = sum(1 for s in sources if s["type"] == "drive")
+        wa_files    = sum(1 for s in sources if s["type"] == "wa_upload")
+
         return {
-            "success": True,
-            "chunks" : added,
-            "message": f"Berhasil! '{filename}' ditambahkan ke knowledge base.\n+{added} chunk baru | Total DB: {total_now} chunk.",
+            "total_chunks": total,
+            "sources"     : sources,
+            "drive_files" : drive_files,
+            "wa_files"    : wa_files,
+            "error"       : None,
         }
 
     except Exception as e:
-        return {"success": False, "chunks": 0,
-                "message": f"Gagal menyimpan ke database: {e}"}
+        return {
+            "total_chunks": 0,
+            "sources"     : [],
+            "drive_files" : 0,
+            "wa_files"    : 0,
+            "error"       : str(e),
+        }
 
 
-def get_chroma_collection():
-    """Kembalikan collection ChromaDB yang sudah ada atau buat baru."""
-    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-    try:
-        return client.get_collection(CHROMA_COLLECTION)
-    except Exception:
-        return client.create_collection(CHROMA_COLLECTION)
+def format_kb_status_message(status: dict) -> str:
+    """Format dict status KB menjadi pesan WA yang rapi untuk admin."""
+    if status.get("error"):
+        return f"❌ Gagal mengambil status KB: {status['error']}"
 
+    total  = status["total_chunks"]
+    lines  = [
+        "📚 *STATUS KNOWLEDGE BASE APRIS*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"📊 Total chunk    : *{total:,}*",
+        f"📂 Dari Google Drive : *{status['drive_files']}* file",
+        f"📎 Dari WA upload    : *{status['wa_files']}* file",
+        "",
+    ]
 
-def get_gemini_client():
-    """Kembalikan Gemini client."""
-    from google import genai
-    return genai.Client(api_key=GEMINI_API_KEY)
+    if status["sources"]:
+        lines.append("📄 *Daftar Dokumen:*")
+        for i, src in enumerate(status["sources"][:15], 1):
+            icon = "📂" if src["type"] == "drive" else "📎"
+            lines.append(f"  {i}. {icon} {src['name']} ({src['chunks']} chunk)")
+        if len(status["sources"]) > 15:
+            lines.append(f"  _...dan {len(status['sources']) - 15} dokumen lainnya_")
+    else:
+        lines.append("_Knowledge base masih kosong._")
+
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "_Ketik `/ingest-kb` untuk re-ingest dari Drive_",
+    ]
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

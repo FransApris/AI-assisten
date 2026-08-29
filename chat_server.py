@@ -1306,6 +1306,29 @@ def _process_green_api(data):
                     lines.append(f"• `/approve {tok}` — {doc['filename']} dari {doc['sender_name']}")
                 green_api.send_message(chat_id, "\n".join(lines))
             return
+        elif raw_admin_msg == "/kb-status":
+            green_api.send_message(chat_id, "Mengambil status Knowledge Base...")
+            def _get_status():
+                try:
+                    from features import drive_ingest as _di
+                    status = _di.get_kb_status()
+                    msg = _di.format_kb_status_message(status)
+                    green_api.send_message(chat_id, msg)
+                except Exception as e:
+                    green_api.send_message(chat_id, f"❌ Gagal: {e}")
+            threading.Thread(target=_get_status, daemon=True).start()
+            return
+        elif raw_admin_msg == "/ingest-kb":
+            green_api.send_message(chat_id, "Memulai proses ingest ulang Google Drive...")
+            def _do_ingest():
+                try:
+                    from features import drive_ingest as _di
+                    added = _di.ingest_drive_files()
+                    green_api.send_message(chat_id, f"✅ Proses ingest selesai! {added} chunk ditambahkan.")
+                except Exception as e:
+                    green_api.send_message(chat_id, f"❌ Ingest gagal: {e}")
+            threading.Thread(target=_do_ingest, daemon=True).start()
+            return
         elif raw_admin_msg in ("/maintenance on", "/maintenance off"):
             import features.messages as _msg_mod
             mode_on = raw_admin_msg.endswith("on")
@@ -1314,6 +1337,7 @@ def _process_green_api(data):
             status = "AKTIF — APRIS tidak akan menjawab user sementara." if mode_on else "NONAKTIF — APRIS kembali normal."
             green_api.send_message(chat_id, f"Mode pemeliharaan: *{status}*")
             return
+
 
     # 🔁 Dedup: abaikan webhook duplikat dari Green-API
     if msg_id and _wa_seen_msg(msg_id):

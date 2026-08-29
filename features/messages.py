@@ -211,6 +211,21 @@ def get_admin_cheatsheet() -> str:
         "• `/usercount`\n"
         "  _Jumlah total user terdaftar_\n\n"
 
+        "📊 *ANALITIK*\n"
+        "• `/stats` atau `/stats 30`\n"
+        "  _Laporan penggunaan 7 atau 30 hari terakhir_\n\n"
+
+        "📚 *KNOWLEDGE BASE*\n"
+        "• Kirim PDF/TXT langsung → masuk antrian KB admin\n\n"
+        "• `/kb-status`\n"
+        "  _Lihat statistik KB (jumlah chunk & daftar dokumen)_\n\n"
+        "• `/pending`\n"
+        "  _Lihat dokumen user yang menunggu persetujuan_\n\n"
+        "• `/approve <TOKEN>`\n"
+        "  _Setujui dokumen masuk KB (user dapat notif)_\n\n"
+        "• `/ingest-kb`\n"
+        "  _Paksa re-ingest dari Google Drive_\n\n"
+
         "🔧 *SISTEM*\n"
         "• `/maintenance on` / `/maintenance off`\n"
         "  _Aktifkan/nonaktifkan mode pemeliharaan_\n\n"
