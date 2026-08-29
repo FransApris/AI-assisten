@@ -1341,7 +1341,7 @@ def _process_green_api(data):
                 resp.raise_for_status()
                 file_bytes = resp.content
 
-                 if fname_lower.endswith(".pdf") or "pdf" in mime_type:
+                if fname_lower.endswith(".pdf") or "pdf" in mime_type:
                     # 🔍 PDF — coba ekstrak teks, fallback ke OCR jika scan
                     from features import pdf_ocr as _pocr
                     # Beri tahu user bahwa sedang diproses
