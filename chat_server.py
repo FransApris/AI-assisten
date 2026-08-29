@@ -144,36 +144,8 @@ def _wa_is_admin(chat_id: str) -> bool:
     return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
 
 
-# ---------------------------------------------------------------------------
-# Long-term Memory Init
-# ---------------------------------------------------------------------------
-try:
-    from features import long_memory as _lmem
-    _lmem.init_db()
-    _LMEM_OK = True
-    print("[LongMemory] Aktif", flush=True)
-except Exception as _lmem_err:
-    print(f"[LongMemory] Nonaktif: {_lmem_err}", flush=True)
-    _LMEM_OK = False
-    _lmem    = None
-
-# ---------------------------------------------------------------------------
-# Analytics Init
-# ---------------------------------------------------------------------------
-try:
-    from features import analytics as _analytics
-    _analytics.init_db()
-    _ANALYTICS_OK = True
-    print("[Analytics] Aktif", flush=True)
-except Exception as _analytics_err:
-    print(f"[Analytics] Nonaktif: {_analytics_err}", flush=True)
-    _ANALYTICS_OK = False
-    _analytics    = None
-
-
 # Legacy Twilio config
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
-
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WA_FROM       = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 _WA_ALLOWED_RAW      = os.getenv("WHATSAPP_ALLOWED_NUMBERS", "")
@@ -599,16 +571,17 @@ def _wa_check_flood(chat_id: str) -> tuple[bool, str, int]:
     return False, "", 0
 
 
-def _summarize_history(history: list, client) -> list:
+def _summarize_history(history: list, client, session_id: str = "") -> list:
     """
     Jika history terlalu panjang, ringkas pesan-pesan lama agar tidak overflow token.
     Kembalikan history baru yang lebih pendek.
+    Juga menyimpan ringkasan ke long-term memory (SQLite) agar persistent.
     """
     if len(history) <= MAX_HISTORY_MSGS:
         return history
 
     # Ambil pesan lama untuk diringkas, sisakan SUMMARY_KEEP_MSGS terakhir
-    old_msgs   = history[:-SUMMARY_KEEP_MSGS]
+    old_msgs    = history[:-SUMMARY_KEEP_MSGS]
     recent_msgs = history[-SUMMARY_KEEP_MSGS:]
 
     old_text = "\n".join(
@@ -627,6 +600,16 @@ def _summarize_history(history: list, client) -> list:
         summary_text = resp.text.strip()
         summary_msg  = {"role": "system", "content": f"[Ringkasan percakapan sebelumnya]:\n{summary_text}", "time": ""}
         print(f"[ContextMgmt] History diringkas ({len(old_msgs)} → 1 summary)", flush=True)
+
+        # 💾 Simpan ringkasan ke long-term memory
+        if session_id and _LMEM_OK:
+            try:
+                key_facts = _lmem.extract_key_facts_from_history(old_msgs)
+                _lmem.save_memory(session_id, summary_text, key_facts)
+                print(f"[LongMemory] Ringkasan disimpan untuk {session_id}", flush=True)
+            except Exception as _me:
+                print(f"[LongMemory] Gagal simpan ringkasan: {_me}", flush=True)
+
         return [summary_msg] + recent_msgs
     except Exception as e:
         print(f"[ContextMgmt] Gagal ringkas: {e}", flush=True)
@@ -1236,54 +1219,6 @@ def _process_green_api(data):
             status = "AKTIF — APRIS tidak akan menjawab user sementara." if mode_on else "NONAKTIF — APRIS kembali normal."
             green_api.send_message(chat_id, f"Mode pemeliharaan: *{status}*")
             return
-        elif raw_admin_msg in ("/stats", "/stats 7", "/stats 30"):
-            # Laporan analitik penggunaan
-            if _ANALYTICS_OK:
-                days = 30 if "30" in raw_admin_msg else 7
-                stats = _analytics.get_stats(days=days)
-                green_api.send_message(chat_id, _analytics.format_stats_message(stats))
-            else:
-                green_api.send_message(chat_id, "Modul analitik tidak aktif.")
-            return
-        elif raw_admin_msg == "/ingest-kb":
-            # Paksa re-ingest dari Google Drive
-            green_api.send_message(chat_id, "Memulai re-ingest knowledge base dari Google Drive...")
-            def _do_ingest():
-                try:
-                    from features import drive_ingest
-                    n = drive_ingest.ingest_drive_files()
-                    green_api.send_message(chat_id, f"Re-ingest selesai. +{n} chunk baru ke knowledge base.")
-                except Exception as e:
-                    green_api.send_message(chat_id, f"Re-ingest gagal: {e}")
-            threading.Thread(target=_do_ingest, daemon=True).start()
-            return
-
-    # 📄 Dokumen dari Admin → Update Knowledge Base
-    # Admin kirim file PDF/TXT → langsung diingest ke ChromaDB
-    if _wa_is_admin(chat_id) and msg_type in ("documentMessage", "imageMessage"):
-        download_url = msg_data.get("fileMessageData", {}).get("downloadUrl", "")
-        filename     = msg_data.get("fileMessageData", {}).get("fileName", "document.pdf")
-        caption      = msg_data.get("fileMessageData", {}).get("caption", "")
-        fname_lower  = filename.lower()
-
-        if download_url and fname_lower.endswith((".pdf", ".txt", ".md")):
-            green_api.send_message(chat_id,
-                f"Dokumen '{filename}' diterima. Memproses ke knowledge base...")
-            def _do_kb_update(_url=download_url, _fname=filename):
-                try:
-                    import requests as _req
-                    resp = _req.get(_url, timeout=60)
-                    resp.raise_for_status()
-                    from features import drive_ingest as _di
-                    result = _di.ingest_file_bytes(resp.content, _fname)
-                    green_api.send_message(chat_id, result["message"])
-                    # Log analytics
-                    if _ANALYTICS_OK:
-                        _analytics.log_event(chat_id, feature="kb_update", name=sender_name)
-                except Exception as e:
-                    green_api.send_message(chat_id, f"Gagal memproses dokumen: {e}")
-            threading.Thread(target=_do_kb_update, daemon=True).start()
-            return
 
     # 🔁 Dedup: abaikan webhook duplikat dari Green-API
     if msg_id and _wa_seen_msg(msg_id):
@@ -1400,19 +1335,6 @@ def _process_green_api(data):
         if _REGISTRY_OK:
             _ureg.add_user(chat_id, name=sender_name, added_by="welcomed")
 
-        # Inject memori jangka panjang ke session baru (jika ada)
-        if _LMEM_OK:
-            mem = _lmem.load_memory(chat_id)
-            mem_ctx = _lmem.build_memory_context(mem)
-            if mem_ctx:
-                history = get_or_create_session(chat_id)
-                history.insert(0, {
-                    "role"   : "system",
-                    "content": f"[Memori percakapan sebelumnya]\n{mem_ctx}",
-                    "time"   : "",
-                })
-                print(f"[LongMemory] Konteks dimuat untuk {chat_id}", flush=True)
-
     # 📋 Cheatsheet — deteksi kata kunci sebelum dikirim ke AI
     # Hemat token: tidak perlu memanggil Gemini untuk perintah ini
     if _msg.is_cheatsheet_request(user_msg):
@@ -1427,20 +1349,37 @@ def _process_green_api(data):
             ).start()
         return
 
-    # 📊 Log analytics untuk pesan chat biasa (non-blocking)
-    if _ANALYTICS_OK:
-        feature_tag = "chat"
-        if any(kw in user_msg.lower() for kw in ("jadwal", "kalender", "meeting", "acara")):
-            feature_tag = "calendar"
-        elif any(kw in user_msg.lower() for kw in ("obat", "minum", "dosis", "ingatkan")):
-            feature_tag = "reminder"
-        elif media_data:
-            feature_tag = "media"
-        threading.Thread(
-            target=_analytics.log_event,
-            args=(chat_id,), kwargs={"feature": feature_tag, "name": sender_name, "msg_len": len(user_msg)},
-            daemon=True
-        ).start()
+    # 🗑️ Hapus riwayat — clear session (dan opsional clear memori)
+    _RESET_TRIGGERS = {"hapus riwayat", "reset chat", "mulai baru", "clear chat", "hapus memori"}
+    _RESET_MEM_TRIGGERS = {"hapus memori", "reset memori", "lupa semua"}
+    user_msg_lower = user_msg.strip().lower()
+
+    if user_msg_lower in _RESET_TRIGGERS:
+        clear_memory = user_msg_lower in _RESET_MEM_TRIGGERS
+        # Simpan dulu ke long-term memory sebelum clear (kecuali jika "hapus memori")
+        if _LMEM_OK and not clear_memory:
+            try:
+                hist_now = get_or_create_session(chat_id)
+                if hist_now:
+                    kf = _lmem.extract_key_facts_from_history(hist_now)
+                    snippet = "\n".join(
+                        f"{m['role'].upper()}: {m['content'][:200]}"
+                        for m in hist_now[-8:] if m.get("role") in ("user","assistant")
+                    )
+                    _lmem.save_memory(chat_id, snippet, kf)
+            except Exception:
+                pass
+        # Clear session in-memory
+        with _sessions_lock:
+            _chat_sessions[chat_id] = {"messages": [], "last_access": datetime.now(TZ)}
+        # Hapus memori jika diminta
+        if clear_memory and _LMEM_OK:
+            _lmem.clear_memory(chat_id)
+            reply = "Riwayat percakapan dan memori APRIS untuk Anda sudah dihapus. 🗑️\nSemua percakapan dimulai dari awal."
+        else:
+            reply = "Riwayat percakapan berhasil dihapus. 🗑️\nKita mulai percakapan baru!\n\n_Catatan: APRIS masih mengingat fakta penting dari percakapan sebelumnya. Ketik *hapus memori* untuk reset total._"
+        green_api.send_message(chat_id, reply)
+        return
 
     # ✅ Acknowledgment segera
     try:
@@ -1688,7 +1627,7 @@ def chat():
             )
 
         # Context Window Management: ringkas jika history terlalu panjang
-        history[:] = _summarize_history(history, client)
+        history[:] = _summarize_history(history, client, session_id=session_id)
 
         # History percakapan sebelumnya
         for msg in history:
@@ -2227,6 +2166,25 @@ def history():
 def clear():
     data       = request.get_json(silent=True) or {}
     session_id = data.get("session_id", "default")
+
+    # Simpan ringkasan ke long-term memory sebelum clear
+    if _LMEM_OK:
+        try:
+            with _sessions_lock:
+                history = _chat_sessions.get(session_id, {}).get("messages", [])
+            if history:
+                key_facts = _lmem.extract_key_facts_from_history(history)
+                # Buat ringkasan singkat dari history terakhir
+                summary_lines = []
+                for m in history[-10:]:
+                    if m.get("role") in ("user", "assistant"):
+                        summary_lines.append(f"{m['role'].upper()}: {m['content'][:200]}")
+                summary = "\n".join(summary_lines)
+                _lmem.save_memory(session_id, summary, key_facts)
+                print(f"[LongMemory] Session {session_id} disimpan sebelum clear", flush=True)
+        except Exception as _me:
+            print(f"[LongMemory] Gagal simpan sebelum clear: {_me}", flush=True)
+
     with _sessions_lock:
         _chat_sessions[session_id] = {"messages": [], "last_access": datetime.now(TZ)}
     return jsonify({"status": "cleared", "session_id": session_id})

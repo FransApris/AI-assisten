@@ -183,8 +183,8 @@ def get_cheatsheet() -> str:
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🔑 *KATA KUNCI KHUSUS*\n"
         "• *catatan* / *bantuan* / *?* — tampilkan menu ini\n"
-        "• *lupa* — APRIS bantu ingat konteks terakhir\n"
-        "• *hapus riwayat* — mulai percakapan baru\n\n"
+        "• *hapus riwayat* — mulai percakapan baru (memori tetap ada)\n"
+        "• *hapus memori* — reset total, APRIS lupa segalanya\n\n"
 
         "_Ketik langsung apa yang Anda butuhkan — tidak perlu format khusus!_ 😊"
     )
@@ -210,16 +210,6 @@ def get_admin_cheatsheet() -> str:
         "  _Lihat semua user: nama + tanggal daftar_\n\n"
         "• `/usercount`\n"
         "  _Jumlah total user terdaftar_\n\n"
-
-        "📊 *ANALITIK*\n"
-        "• `/stats` atau `/stats 30`\n"
-        "  _Laporan penggunaan 7 atau 30 hari terakhir_\n\n"
-
-        "📚 *KNOWLEDGE BASE*\n"
-        "• Kirim file PDF/TXT langsung ke chat ini\n"
-        "  _Dokumen otomatis ditambahkan ke knowledge base_\n\n"
-        "• `/ingest-kb`\n"
-        "  _Paksa re-ingest ulang dari Google Drive_\n\n"
 
         "🔧 *SISTEM*\n"
         "• `/maintenance on` / `/maintenance off`\n"
