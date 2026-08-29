@@ -120,6 +120,35 @@ except Exception as _reg_err:
     _wa_approved_users : set = set(WA_WHITELIST)
     _REGISTRY_OK = False
 
+# ---------------------------------------------------------------------------
+# Pending KB Approval Queue
+# ---------------------------------------------------------------------------
+# Dokumen yang dikirim user, menunggu persetujuan admin sebelum masuk KB global
+# Format: {token: {"filename", "bytes", "sender", "sender_name", "ts"}}
+import time as _time_mod
+_pending_kb      : dict = {}
+_pending_kb_lock : threading.Lock = threading.Lock()
+
+
+def _add_pending_kb(file_bytes: bytes, filename: str, sender_id: str, sender_name: str) -> str:
+    """Simpan dokumen ke antrian pending KB. Return token 8-karakter unik."""
+    import hashlib
+    token = hashlib.md5(file_bytes).hexdigest()[:8].upper()
+    with _pending_kb_lock:
+        # Bersihkan entri lama (> 24 jam)
+        now     = _time_mod.time()
+        expired = [k for k, v in _pending_kb.items() if now - v["ts"] > 86400]
+        for k in expired:
+            del _pending_kb[k]
+        _pending_kb[token] = {
+            "filename"   : filename,
+            "bytes"      : file_bytes,
+            "sender"     : sender_id,
+            "sender_name": sender_name,
+            "ts"         : now,
+        }
+    return token
+
 
 def _wa_approve_user(chat_id: str, name: str = "", added_by: str = "invite_code"):
     """Tambahkan nomor ke approved set DAN simpan ke SQLite."""
@@ -1211,6 +1240,61 @@ def _process_green_api(data):
             total = _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users)
             green_api.send_message(chat_id, f"Total user terdaftar: *{total}*")
             return
+        elif raw_admin_msg.startswith("/approve"):
+            # /approve <TOKEN> — setujui dokumen masuk ke KB
+            parts = raw_admin_msg.split()
+            if len(parts) < 2:
+                # Tampilkan daftar pending
+                with _pending_kb_lock:
+                    pending_list = list(_pending_kb.items())
+                if not pending_list:
+                    green_api.send_message(chat_id, "Tidak ada dokumen yang menunggu persetujuan.")
+                else:
+                    lines = ["*Dokumen menunggu persetujuan:*"]
+                    for tok, doc in pending_list:
+                        lines.append(f"• `{tok}` — {doc['filename']} dari {doc['sender_name']}")
+                    lines.append("\nGunakan: `/approve <TOKEN>`")
+                    green_api.send_message(chat_id, "\n".join(lines))
+            else:
+                token = parts[1].upper()
+                with _pending_kb_lock:
+                    doc = _pending_kb.get(token)
+                if not doc:
+                    green_api.send_message(chat_id, f"Token `{token}` tidak ditemukan atau sudah kadaluarsa.")
+                else:
+                    green_api.send_message(chat_id,
+                        f"Menambahkan *{doc['filename']}* ke knowledge base...")
+                    def _do_approve(_doc=doc, _token=token):
+                        try:
+                            from features import drive_ingest as _di
+                            res = _di.ingest_file_bytes(_doc["bytes"], _doc["filename"])
+                            green_api.send_message(chat_id, res["message"])
+                            # Notif ke pengirim asli
+                            if _doc["sender"] != chat_id:
+                                green_api.send_message(_doc["sender"],
+                                    f"✅ Dokumen *{_doc['filename']}* Anda telah disetujui admin "
+                                    f"dan kini menjadi bagian dari knowledge base APRIS!")
+                            # Hapus dari antrian
+                            with _pending_kb_lock:
+                                _pending_kb.pop(_token, None)
+                            if _ANALYTICS_OK:
+                                _analytics.log_event(chat_id, feature="kb_update", name="admin_approve")
+                        except Exception as e:
+                            green_api.send_message(chat_id, f"Gagal approve: {e}")
+                    threading.Thread(target=_do_approve, daemon=True).start()
+            return
+        elif raw_admin_msg == "/pending":
+            # Alias untuk /approve tanpa token
+            with _pending_kb_lock:
+                pending_list = list(_pending_kb.items())
+            if not pending_list:
+                green_api.send_message(chat_id, "Tidak ada dokumen yang menunggu persetujuan.")
+            else:
+                lines = ["*Dokumen menunggu persetujuan:*"]
+                for tok, doc in pending_list:
+                    lines.append(f"• `/approve {tok}` — {doc['filename']} dari {doc['sender_name']}")
+                green_api.send_message(chat_id, "\n".join(lines))
+            return
         elif raw_admin_msg in ("/maintenance on", "/maintenance off"):
             import features.messages as _msg_mod
             mode_on = raw_admin_msg.endswith("on")
@@ -1257,7 +1341,7 @@ def _process_green_api(data):
                 resp.raise_for_status()
                 file_bytes = resp.content
 
-                if fname_lower.endswith(".pdf") or "pdf" in mime_type:
+                 if fname_lower.endswith(".pdf") or "pdf" in mime_type:
                     # 🔍 PDF — coba ekstrak teks, fallback ke OCR jika scan
                     from features import pdf_ocr as _pocr
                     # Beri tahu user bahwa sedang diproses
@@ -1290,6 +1374,22 @@ def _process_green_api(data):
                             f"Isi dokumen:\n```\n{result['text']}\n```"
                         )
                         print(f"[DocPDF] '{filename}': {result['chars']} char via {result['method']}", flush=True)
+
+                        # 📬 Simpan ke antrian pending KB + notifikasi admin
+                        if WA_ADMIN_CHAT_ID and not _wa_is_admin(chat_id):
+                            _sender_name_local = sender_name or chat_id
+                            token = _add_pending_kb(
+                                file_bytes, filename,
+                                sender_id=chat_id, sender_name=_sender_name_local
+                            )
+                            green_api.send_message(WA_ADMIN_CHAT_ID,
+                                f"📄 *PDF baru dari user:*\n"
+                                f"👤 {_sender_name_local} ({chat_id})\n"
+                                f"📎 {filename} ({result['pages']} hlm, {result['method']})\n\n"
+                                f"Ketik `/approve {token}` untuk menambahkan ke knowledge base."
+                            )
+                            print(f"[PendingKB] '{filename}' dari {chat_id}, token={token}", flush=True)
+
 
                 elif fname_lower.endswith((".txt", ".md", ".csv", ".json")):
                     text_content = file_bytes.decode("utf-8", errors="ignore")
