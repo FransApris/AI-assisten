@@ -14,7 +14,9 @@ except Exception:
     from datetime import timezone
     TZ = timezone(timedelta(hours=7))
 
-SCHEDULER_DB   = os.getenv("SCHEDULER_DB", "./reminders.db")
+_IS_RAILWAY  = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+_default_db  = "/data/reminders.db" if _IS_RAILWAY else "./reminders.db"
+SCHEDULER_DB = os.getenv("SCHEDULER_DB", _default_db)
 _scheduler     = None
 _send_callback = None   # dipasang oleh features_server jika WA aktif
 

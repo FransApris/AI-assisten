@@ -265,7 +265,27 @@ Jika pengguna menyelesaikan tugas:
 Jika pengguna meminta informasi kontak seseorang dari Google Contacts:
 <SEARCH_CONTACT name="Nama Orang"/>
 
-§12 BATASAN
+§12 PENGINGAT & PESAN TERJADWAL
+Jika pengguna meminta diingatkan sesuatu pada waktu tertentu ("ingatkan saya jam 3 sore", "tolong ingatkan besok pukul 08:00", dll), buat pengingat menggunakan:
+<SCHEDULE_MSG to="{nomor_wa_pengirim}" at="YYYY-MM-DDTHH:MM" message="Teks pengingat yang akan dikirim"/>
+PENTING:
+- Gunakan nomor WA pengguna saat ini sebagai nilai 'to' (dari session_id)
+- Gunakan format tanggal-waktu ISO: YYYY-MM-DDTHH:MM (contoh: 2026-09-01T15:00)
+- Pastikan waktu dalam zona WIB (+07:00)
+- Jika pengguna tidak menyebut tanggal, asumsikan hari ini
+- Jika waktu sudah lewat hari ini, asumsikan besok
+
+Contoh respons:
+"Baik, saya akan mengingatkan Anda pukul 15:00."
+<SCHEDULE_MSG to="{nomor_wa}" at="2026-08-31T15:00" message="Pengingat: rapat dengan tim pukul 15:00"/>
+
+Untuk melihat daftar pengingat aktif:
+<LIST_SCHEDULE_MSG/>
+
+Untuk membatalkan pengingat:
+<CANCEL_SCHEDULE_MSG id="rem_xxxxxxxx"/>
+
+§13 BATASAN
 • DILARANG diagnosis medis definitif — arahkan ke dokter
 • DILARANG nasihat hukum mengikat — arahkan ke pengacara
 • Jujur jika tidak tahu atau data tidak real-time
@@ -697,7 +717,9 @@ def _get_scheduler():
         import logging
         logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
-        db_path    = Path(__file__).parent / "reminders.db"
+        # Gunakan /data/ (Railway Volume) jika tersedia, fallback ke direktori lokal
+        _data_dir  = Path("/data") if Path("/data").exists() else Path(__file__).parent
+        db_path    = _data_dir / "reminders.db"
         _scheduler = BackgroundScheduler(
             jobstores ={"default": SQLAlchemyJobStore(url=f"sqlite:///{db_path}")},
             executors ={"default": ThreadPoolExecutor(5)},
@@ -1821,8 +1843,16 @@ def chat():
 
         # Sisipkan system prompt sebagai pesan pertama user/model
         if not history:
-            now_str_full = datetime.now(TZ).strftime("%A, %Y-%m-%d %H:%M:%S %z")
-            dynamic_prompt = f"[SYSTEM]\nWaktu saat ini: {now_str_full}\n\n{SYSTEM_PROMPT}"
+            now_str_full  = datetime.now(TZ).strftime("%A, %Y-%m-%d %H:%M:%S %z")
+            # Inject nomor WA & nama user agar Gemini bisa pakai di tag SCHEDULE_MSG
+            _sender_label = sender_name or session_id
+            dynamic_prompt = (
+                f"[SYSTEM]\n"
+                f"Waktu saat ini: {now_str_full}\n"
+                f"Nomor WA pengguna: {session_id}\n"
+                f"Nama pengguna: {_sender_label}\n\n"
+                f"{SYSTEM_PROMPT}"
+            )
             contents.append(
                 types.Content(role="user",  parts=[types.Part(text=dynamic_prompt)])
             )
