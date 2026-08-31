@@ -179,9 +179,20 @@ def _wa_remove_user(chat_id: str):
 
 def _wa_is_admin(chat_id: str) -> bool:
     """Cek apakah chat_id adalah admin."""
-    if not WA_ADMIN_NUMBERS:
-        return False
-    return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
+    # Jika WA_ADMIN_NUMBERS eksplisit ada, gunakan itu
+    if WA_ADMIN_NUMBERS:
+        return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
+    
+    # Jika kosong, fallback: anggap user yang ter-whitelist sebagai admin
+    if WA_WHITELIST:
+        return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_WHITELIST)
+    
+    # Fallback terakhir: cek dari SQLite (user yang sudah diapprove)
+    with _wa_approved_lock:
+        if chat_id in _wa_approved_users:
+            return True
+    
+    return False
 
 
 # ---------------------------------------------------------------------------
