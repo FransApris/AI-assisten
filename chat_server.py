@@ -1836,9 +1836,11 @@ def chat():
     if auth_err:
         return auth_err
 
-    data       = request.get_json(silent=True) or {}
-    user_msg   = (data.get("message") or "").strip()
-    session_id = data.get("session_id") or "default"
+    data        = request.get_json(silent=True) or {}
+    user_msg    = (data.get("message") or "").strip()
+    session_id  = data.get("session_id") or "default"
+    sender_name = data.get("sender_name") or ""
+
 
     if not user_msg:
         return jsonify({"error": "Pesan tidak boleh kosong."}), 400
