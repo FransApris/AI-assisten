@@ -1479,15 +1479,33 @@ def _process_green_api(data):
                             "gemini_ocr": "OCR (scan dikenali AI ✨)",
                         }.get(result["method"], result["method"])
                         trunc_note = " _(dipotong, dokumen terlalu panjang)_" if result["truncated"] else ""
+                        original_caption = user_msg
                         user_msg = (
                             f"[PDF: *{filename}* | {result['pages']} hlm | {method_label}{trunc_note}]\n\n"
-                            f"{user_msg + chr(10) if user_msg else ''}"
+                            f"{original_caption + chr(10) if original_caption else ''}"
                             f"Isi dokumen:\n```\n{result['text']}\n```"
                         )
                         print(f"[DocPDF] '{filename}': {result['chars']} char via {result['method']}", flush=True)
 
-                        # 📬 Simpan ke antrian pending KB + notifikasi admin
-                        if WA_ADMIN_CHAT_ID and not _wa_is_admin(chat_id):
+                        is_admin = _wa_is_admin(chat_id)
+                        
+                        # Jika admin memberikan perintah /ingest di caption, langsung masukkan ke KB permanen
+                        if is_admin and "/ingest" in original_caption.lower():
+                            green_api.send_message(chat_id, f"⏳ Menyimpan *{filename}* ke memori permanen...")
+                            def _do_direct_ingest():
+                                try:
+                                    from features import drive_ingest as _di
+                                    _res = _di.ingest_file_bytes(file_bytes, filename)
+                                    if _res.get("error"):
+                                        green_api.send_message(chat_id, f"❌ Gagal ingest: {_res['error']}")
+                                    else:
+                                        green_api.send_message(chat_id, f"✅ *{filename}* berhasil disimpan permanen ke Global Knowledge Base!")
+                                except Exception as e:
+                                    green_api.send_message(chat_id, f"❌ Terjadi kesalahan saat ingest: {e}")
+                            threading.Thread(target=_do_direct_ingest, daemon=True).start()
+                        
+                        # 📬 Simpan ke antrian pending KB + notifikasi admin JIKA PENGIRIM BUKAN ADMIN
+                        elif WA_ADMIN_CHAT_ID and not is_admin:
                             _sender_name_local = sender_name or chat_id
                             token = _add_pending_kb(
                                 file_bytes, filename,
