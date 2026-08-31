@@ -211,10 +211,7 @@ except Exception as _analytics_err:
     _analytics    = None  # type: ignore[assignment]
 
 
-# Legacy Twilio config
-TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
-TWILIO_WA_FROM       = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+# WHATSAPP_ALLOWED_NUMBERS: daftar nomor yang diizinkan (fallback jika WA_WHITELIST kosong)
 _WA_ALLOWED_RAW      = os.getenv("WHATSAPP_ALLOWED_NUMBERS", "")
 WA_ALLOWED_NUMBERS   = [n.strip() for n in _WA_ALLOWED_RAW.split(",") if n.strip()]
 
@@ -2144,23 +2141,31 @@ def chat():
         if "<REMEMBER" in apris_reply or "<FORGET" in apris_reply:
             import re
             try:
-                from features import memory
+                from features import memory as _mem_json  # fallback JSON (global)
 
-                # Proses SEMUA tag <REMEMBER> (bisa lebih dari satu)
+                # Proses SEMUA tag <REMEMBER>
                 rem_matches = re.findall(r'<REMEMBER fact="([^"]+)"\s*/?>', apris_reply)
                 if rem_matches:
-                    apris_reply = re.sub(r'<REMEMBER[^>]*/?>', '', apris_reply).strip()
+                    apris_reply = re.sub(r'<REMEMBER[^>]*/?>',  '', apris_reply).strip()
                     for fact in rem_matches:
-                        res = memory.add_memory(fact.strip())
-                        apris_reply += f"\n\n🧠 *{res}*"
+                        fact = fact.strip()
+                        # Simpan ke SQLite per-user (persistent Railway Volume)
+                        if _LMEM_OK and _lmem and session_id:
+                            _lmem.save_fact(session_id, fact)
+                        # Simpan juga ke JSON global (fallback)
+                        _mem_json.add_memory(fact)
+                        apris_reply += f"\n\n\U0001f9e0 *Saya telah mengingat hal tersebut.*"
 
-                # Proses SEMUA tag <FORGET> (bisa lebih dari satu)
+                # Proses SEMUA tag <FORGET>
                 for_matches = re.findall(r'<FORGET fact="([^"]+)"\s*/?>', apris_reply)
                 if for_matches:
-                    apris_reply = re.sub(r'<FORGET[^>]*/?>', '', apris_reply).strip()
+                    apris_reply = re.sub(r'<FORGET[^>]*/?>',  '', apris_reply).strip()
                     for fact in for_matches:
-                        res = memory.remove_memory(fact.strip())
-                        apris_reply += f"\n\n🧠 *{res}*"
+                        fact = fact.strip()
+                        if _LMEM_OK and _lmem and session_id:
+                            _lmem.forget_fact(session_id, fact)
+                        _mem_json.remove_memory(fact)
+                        apris_reply += f"\n\n\U0001f9e0 *Baik, saya telah melupakannya.*"
 
             except Exception:
                 pass  # Abaikan jika gagal
@@ -2290,6 +2295,33 @@ def chat():
                         apris_reply += f"\n\n{res}"
             except Exception as e:
                 apris_reply += f"\n\n_Gagal mencari kontak: {e}_"
+
+        # Intercept untuk Web Search
+        if "<WEB_SEARCH" in apris_reply or "<SEARCH_NEWS" in apris_reply:
+            import re
+            try:
+                from features import search as _search_mod
+
+                # WEB_SEARCH
+                ws_matches = re.findall(r'<WEB_SEARCH\s+query="([^"]+)"\s*/?>', apris_reply)
+                if ws_matches:
+                    apris_reply = re.sub(r'<WEB_SEARCH[^>]*/?>',  '', apris_reply).strip()
+                    for query in ws_matches:
+                        result = _search_mod.search(query.strip())
+                        summary = result.get("summary", "_Tidak ada hasil._")
+                        apris_reply += f"\n\n🔍 *Hasil pencarian untuk: {query}*\n\n{summary}"
+
+                # SEARCH_NEWS
+                sn_matches = re.findall(r'<SEARCH_NEWS\s+query="([^"]+)"\s*/?>', apris_reply)
+                if sn_matches:
+                    apris_reply = re.sub(r'<SEARCH_NEWS[^>]*/?>',  '', apris_reply).strip()
+                    for query in sn_matches:
+                        result = _search_mod.search_news(query.strip())
+                        summary = result.get("summary", "_Tidak ada berita._")
+                        apris_reply += f"\n\n📰 *Berita tentang: {query}*\n\n{summary}"
+
+            except Exception as e:
+                apris_reply += f"\n\n_Gagal melakukan pencarian: {e}_"
 
         # Intercept untuk Pesan Terjadwal (SCHEDULE_MSG)
         if "<SCHEDULE_MSG" in apris_reply or "<CANCEL_SCHEDULE_MSG" in apris_reply or "<LIST_SCHEDULE_MSG" in apris_reply:
