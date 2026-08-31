@@ -1,20 +1,8 @@
 """
 features/analytics.py — APRIS Usage Analytics
-================================================
-Mencatat setiap interaksi user untuk laporan statistik penggunaan.
-Data disimpan ke SQLite (/data/analytics.db).
-
-Admin ketik '/stats' di WA untuk melihat laporan.
-
-Skema DB:
-  TABLE usage_log (
-    id         INTEGER PRIMARY KEY,
-    chat_id    TEXT,
-    name       TEXT,
-    feature    TEXT,   -- 'chat', 'calendar', 'reminder', 'kb_update', 'cheatsheet', dll
-    msg_len    INTEGER,
-    created_at TEXT
-  )
+===============================================
+Log penggunaan fitur per user ke SQLite (/data/analytics.db)
+Digunakan oleh admin command /stats untuk laporan.
 """
 
 import os
@@ -24,61 +12,62 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 # ---------------------------------------------------------------------------
-# Config
+# Konfigurasi
 # ---------------------------------------------------------------------------
-_IS_RAILWAY   = bool(os.getenv("RAILWAY_ENVIRONMENT"))
-_DEFAULT_PATH = "/data/analytics.db" if _IS_RAILWAY else str(
-    Path(__file__).resolve().parent.parent / "analytics.db"
-)
-ANALYTICS_DB_PATH = os.getenv("ANALYTICS_DB_PATH", _DEFAULT_PATH)
-
-_db_lock = threading.Lock()
+_IS_RAILWAY  = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+_DEFAULT_DB  = "/data/analytics.db" if _IS_RAILWAY else "./analytics.db"
+ANALYTICS_DB = os.getenv("ANALYTICS_DB_PATH", _DEFAULT_DB)
+_db_lock     = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# DB Init
+# Init
 # ---------------------------------------------------------------------------
 def init_db():
     """Buat tabel analytics jika belum ada."""
-    Path(ANALYTICS_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(ANALYTICS_DB).parent.mkdir(parents=True, exist_ok=True)
     with _db_lock:
-        conn = sqlite3.connect(ANALYTICS_DB_PATH, check_same_thread=False)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS usage_log (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id    TEXT    NOT NULL,
-                name       TEXT    DEFAULT '',
-                feature    TEXT    DEFAULT 'chat',
-                msg_len    INTEGER DEFAULT 0,
-                created_at TEXT    DEFAULT (datetime('now'))
+        con = sqlite3.connect(ANALYTICS_DB)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id  TEXT NOT NULL,
+                feature  TEXT NOT NULL,
+                name     TEXT,
+                ts       TEXT NOT NULL
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON usage_log(chat_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_created ON usage_log(created_at)")
-        conn.commit()
-        conn.close()
-    print(f"[Analytics] DB init: {ANALYTICS_DB_PATH}", flush=True)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_ts      ON events(ts)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_user    ON events(user_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_feature ON events(feature)")
+        con.commit()
+        con.close()
+
+
+def _get_con() -> sqlite3.Connection:
+    Path(ANALYTICS_DB).parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(ANALYTICS_DB)
 
 
 # ---------------------------------------------------------------------------
-# Logging
+# Log
 # ---------------------------------------------------------------------------
-def log_event(chat_id: str, feature: str = "chat", name: str = "", msg_len: int = 0):
-    """
-    Catat satu event penggunaan ke DB.
-    Dipanggil di background thread agar tidak blocking.
-    """
+def log_event(user_id: str, feature: str = "chat", name: str = ""):
+    """Log satu event penggunaan fitur."""
+    if not user_id:
+        return
+    ts = datetime.now().isoformat()
     try:
         with _db_lock:
-            conn = sqlite3.connect(ANALYTICS_DB_PATH, check_same_thread=False)
-            conn.execute(
-                "INSERT INTO usage_log (chat_id, name, feature, msg_len) VALUES (?, ?, ?, ?)",
-                (chat_id, name, feature, msg_len),
+            con = _get_con()
+            con.execute(
+                "INSERT INTO events(user_id, feature, name, ts) VALUES(?,?,?,?)",
+                (user_id, feature, name or "", ts)
             )
-            conn.commit()
-            conn.close()
+            con.commit()
+            con.close()
     except Exception as e:
-        print(f"[Analytics] Gagal log: {e}", flush=True)
+        print(f"[Analytics] log_event error: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -86,108 +75,112 @@ def log_event(chat_id: str, feature: str = "chat", name: str = "", msg_len: int 
 # ---------------------------------------------------------------------------
 def get_stats(days: int = 7) -> dict:
     """
-    Ambil statistik penggunaan N hari terakhir.
-    Return dict dengan data siap tampil.
+    Ambil statistik penggunaan selama N hari terakhir.
+    Returns:
+        {
+          "period_days": int,
+          "total_messages": int,
+          "active_users": int,
+          "features": [{"name": str, "count": int, "pct": float}],
+          "top_users": [{"user_id": str, "name": str, "count": int}],
+          "error": str | None
+        }
     """
     try:
-        since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+        since = (datetime.now() - timedelta(days=days)).isoformat()
         with _db_lock:
-            conn = sqlite3.connect(ANALYTICS_DB_PATH, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
+            con = _get_con()
 
-            # Total pesan
-            total = conn.execute(
-                "SELECT COUNT(*) as n FROM usage_log WHERE created_at >= ?", (since,)
-            ).fetchone()["n"]
+            total = con.execute(
+                "SELECT COUNT(*) FROM events WHERE ts >= ?", (since,)
+            ).fetchone()[0]
 
-            # User unik aktif
-            active_users = conn.execute(
-                "SELECT COUNT(DISTINCT chat_id) as n FROM usage_log WHERE created_at >= ?", (since,)
-            ).fetchone()["n"]
+            active_users = con.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM events WHERE ts >= ?", (since,)
+            ).fetchone()[0]
 
-            # Breakdown per fitur
-            features = conn.execute(
-                """SELECT feature, COUNT(*) as n FROM usage_log
-                   WHERE created_at >= ?
-                   GROUP BY feature ORDER BY n DESC""",
+            feature_rows = con.execute(
+                """SELECT feature, COUNT(*) as cnt FROM events
+                   WHERE ts >= ? GROUP BY feature ORDER BY cnt DESC""",
                 (since,)
             ).fetchall()
 
-            # Top 5 user paling aktif
-            top_users = conn.execute(
-                """SELECT name, chat_id, COUNT(*) as n FROM usage_log
-                   WHERE created_at >= ?
-                   GROUP BY chat_id ORDER BY n DESC LIMIT 5""",
+            user_rows = con.execute(
+                """SELECT user_id, name, COUNT(*) as cnt FROM events
+                   WHERE ts >= ? GROUP BY user_id ORDER BY cnt DESC LIMIT 10""",
                 (since,)
             ).fetchall()
 
-            # Total sepanjang waktu
-            total_all = conn.execute("SELECT COUNT(*) as n FROM usage_log").fetchone()["n"]
-            total_users_all = conn.execute("SELECT COUNT(DISTINCT chat_id) as n FROM usage_log").fetchone()["n"]
+            con.close()
 
-            conn.close()
+        features = [
+            {
+                "name" : row[0],
+                "count": row[1],
+                "pct"  : round(row[1] / max(total, 1) * 100, 1),
+            }
+            for row in feature_rows
+        ]
+
+        top_users = [
+            {"user_id": row[0], "name": row[1] or row[0], "count": row[2]}
+            for row in user_rows
+        ]
 
         return {
-            "days"           : days,
-            "total_msgs"     : total,
-            "active_users"   : active_users,
-            "features"       : [dict(f) for f in features],
-            "top_users"      : [dict(u) for u in top_users],
-            "total_all"      : total_all,
-            "total_users_all": total_users_all,
+            "period_days"   : days,
+            "total_messages": total,
+            "active_users"  : active_users,
+            "features"      : features,
+            "top_users"     : top_users,
+            "error"         : None,
         }
     except Exception as e:
-        print(f"[Analytics] Gagal get_stats: {e}", flush=True)
-        return {}
+        return {
+            "period_days"   : days,
+            "total_messages": 0,
+            "active_users"  : 0,
+            "features"      : [],
+            "top_users"     : [],
+            "error"         : str(e),
+        }
 
 
 def format_stats_message(stats: dict) -> str:
-    """Format dict stats menjadi pesan WA yang rapi."""
-    if not stats:
-        return "Gagal mengambil data analitik."
+    """Format stats dict menjadi pesan WA untuk admin."""
+    if stats.get("error"):
+        return f"❌ Gagal membuat laporan: {stats['error']}"
 
-    days = stats.get("days", 7)
+    days  = stats["period_days"]
+    total = stats["total_messages"]
+    users = stats["active_users"]
+
     lines = [
         f"📊 *STATISTIK APRIS ({days} hari terakhir)*",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
-        f"👥 User aktif    : *{stats['active_users']}* user",
-        f"💬 Total pesan   : *{stats['total_msgs']}* pesan",
+        f"👥 User aktif    : *{users} user*",
+        f"💬 Total pesan   : *{total} pesan*",
         "",
     ]
 
-    # Breakdown fitur
-    if stats.get("features"):
-        total = stats["total_msgs"] or 1
+    if stats["features"]:
         lines.append("📈 *Fitur terpopuler:*")
-        feature_labels = {
-            "chat"       : "Chat / Tanya jawab",
-            "calendar"   : "Kalender & jadwal",
-            "reminder"   : "Pengingat & obat",
-            "cheatsheet" : "Lihat catatan",
-            "kb_update"  : "Update knowledge base",
-            "voice"      : "Pesan suara",
-            "media"      : "Gambar / file",
-            "admin"      : "Perintah admin",
-        }
+        bar_chars = "█"
         for f in stats["features"][:6]:
-            label = feature_labels.get(f["feature"], f["feature"])
-            pct   = round(f["n"] / total * 100)
-            bar   = "█" * (pct // 10) + "░" * (10 - pct // 10)
-            lines.append(f"  {bar} {pct}% {label} ({f['n']}x)")
-        lines.append("")
+            bar_len = max(1, int(f["pct"] / 10))
+            bar     = bar_chars * bar_len + "░" * (10 - bar_len)
+            lines.append(f"  {bar} {f['pct']}% {f['name']} ({f['count']}x)")
 
-    # Top users
-    if stats.get("top_users"):
-        lines.append("🏆 *User paling aktif:*")
-        for i, u in enumerate(stats["top_users"], 1):
-            name = u.get("name") or u.get("chat_id", "?")[:15]
-            lines.append(f"  {i}. {name} — {u['n']} pesan")
+    if stats["top_users"]:
         lines.append("")
+        lines.append("🏆 *User paling aktif:*")
+        for i, u in enumerate(stats["top_users"][:5], 1):
+            lines.append(f"  {i}. {u['name']} — {u['count']} pesan")
 
     lines += [
+        "",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"_Total sepanjang waktu: {stats['total_all']} pesan dari {stats['total_users_all']} user_",
+        f"_Gunakan `/stats 30` untuk laporan 30 hari_",
     ]
-
     return "\n".join(lines)

@@ -184,6 +184,33 @@ def _wa_is_admin(chat_id: str) -> bool:
     return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
 
 
+# ---------------------------------------------------------------------------
+# Long-term Memory Init
+# ---------------------------------------------------------------------------
+try:
+    from features import long_memory as _lmem
+    _lmem.init_db()
+    _LMEM_OK = True
+    print("[LongMemory] SQLite memory init OK", flush=True)
+except Exception as _lmem_err:
+    print(f"[LongMemory] Gagal init: {_lmem_err}", flush=True)
+    _LMEM_OK = False
+    _lmem    = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
+# Analytics Init
+# ---------------------------------------------------------------------------
+try:
+    from features import analytics as _analytics
+    _analytics.init_db()
+    _ANALYTICS_OK = True
+    print("[Analytics] SQLite analytics init OK", flush=True)
+except Exception as _analytics_err:
+    print(f"[Analytics] Gagal init: {_analytics_err}", flush=True)
+    _ANALYTICS_OK = False
+    _analytics    = None  # type: ignore[assignment]
+
+
 # Legacy Twilio config
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")

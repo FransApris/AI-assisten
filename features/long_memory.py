@@ -1,178 +1,207 @@
 """
-features/long_memory.py — APRIS Persistent Long-term Memory Per User
-=====================================================================
-Menyimpan ringkasan percakapan per user ke SQLite (/data/memory.db)
-agar APRIS tetap "ingat" konteks meski Railway restart.
+features/long_memory.py — APRIS Long-Term Memory (Per-User Persistent Facts)
+===========================================================================
+Menyimpan ringkasan & fakta penting tentang user ke SQLite (/data/memory.db)
+agar tetap ada setelah Railway restart.
 
-Cara kerja:
-  1. Saat session baru dibuat: load summary lama dari DB → inject ke history
-  2. Saat history di-trim / session clear: simpan ringkasan baru ke DB
-  3. Ringkasan dibuat oleh Gemini dari percakapan terakhir
-
-Skema DB:
-  TABLE user_memory (
-    chat_id     TEXT PRIMARY KEY,
-    summary     TEXT,        -- ringkasan percakapan terakhir
-    key_facts   TEXT,        -- fakta penting (JSON array)
-    updated_at  TEXT
-  )
+Operasi:
+  - save_memory(user_id, snippet, key_facts)
+  - load_memory(user_id) → str (konteks untuk inject ke Gemini)
+  - clear_memory(user_id)
+  - extract_key_facts_from_history(history) → list[str]
 """
 
 import os
-import json
 import sqlite3
 import threading
+import json
 from pathlib import Path
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
-# Config
+# Konfigurasi
 # ---------------------------------------------------------------------------
-_IS_RAILWAY  = bool(os.getenv("RAILWAY_ENVIRONMENT"))
-_DEFAULT_PATH = "/data/memory.db" if _IS_RAILWAY else str(
-    Path(__file__).resolve().parent.parent / "memory.db"
-)
-MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", _DEFAULT_PATH)
+_IS_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+_DEFAULT_DB = "/data/memory.db" if _IS_RAILWAY else "./memory.db"
+MEMORY_DB   = os.getenv("MEMORY_DB_PATH", _DEFAULT_DB)
+_db_lock    = threading.Lock()
 
-_db_lock = threading.Lock()
+MAX_FACTS_PER_USER   = 20   # maks fakta per user
+MAX_SNIPPET_LENGTH   = 800  # maks karakter snippet
 
 
 # ---------------------------------------------------------------------------
-# DB Init
+# Inisialisasi DB
 # ---------------------------------------------------------------------------
 def init_db():
     """Buat tabel jika belum ada."""
-    Path(MEMORY_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(MEMORY_DB).parent.mkdir(parents=True, exist_ok=True)
     with _db_lock:
-        conn = sqlite3.connect(MEMORY_DB_PATH, check_same_thread=False)
-        conn.execute("""
+        con = sqlite3.connect(MEMORY_DB)
+        con.execute("""
             CREATE TABLE IF NOT EXISTS user_memory (
-                chat_id    TEXT PRIMARY KEY,
-                summary    TEXT DEFAULT '',
-                key_facts  TEXT DEFAULT '[]',
-                updated_at TEXT DEFAULT (datetime('now'))
+                user_id  TEXT NOT NULL,
+                key_fact TEXT NOT NULL,
+                updated  TEXT NOT NULL,
+                PRIMARY KEY (user_id, key_fact)
             )
         """)
-        conn.commit()
-        conn.close()
-    print(f"[LongMemory] DB init: {MEMORY_DB_PATH}", flush=True)
-
-
-# ---------------------------------------------------------------------------
-# Read / Write
-# ---------------------------------------------------------------------------
-def load_memory(chat_id: str) -> dict:
-    """
-    Muat memori user dari DB.
-    Return: {'summary': str, 'key_facts': list}
-    """
-    try:
-        with _db_lock:
-            conn = sqlite3.connect(MEMORY_DB_PATH, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT summary, key_facts FROM user_memory WHERE chat_id = ?",
-                (chat_id,)
-            ).fetchone()
-            conn.close()
-        if row:
-            return {
-                "summary"  : row["summary"] or "",
-                "key_facts": json.loads(row["key_facts"] or "[]"),
-            }
-    except Exception as e:
-        print(f"[LongMemory] Gagal load {chat_id}: {e}", flush=True)
-    return {"summary": "", "key_facts": []}
-
-
-def save_memory(chat_id: str, summary: str, key_facts: list = None):
-    """Simpan/update memori user ke DB."""
-    try:
-        facts_json = json.dumps(key_facts or [], ensure_ascii=False)
-        with _db_lock:
-            conn = sqlite3.connect(MEMORY_DB_PATH, check_same_thread=False)
-            conn.execute(
-                """
-                INSERT INTO user_memory (chat_id, summary, key_facts, updated_at)
-                VALUES (?, ?, ?, datetime('now'))
-                ON CONFLICT(chat_id) DO UPDATE SET
-                    summary    = excluded.summary,
-                    key_facts  = excluded.key_facts,
-                    updated_at = excluded.updated_at
-                """,
-                (chat_id, summary, facts_json),
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS user_snippet (
+                user_id TEXT PRIMARY KEY,
+                snippet TEXT,
+                updated TEXT
             )
-            conn.commit()
-            conn.close()
-    except Exception as e:
-        print(f"[LongMemory] Gagal save {chat_id}: {e}", flush=True)
+        """)
+        con.commit()
+        con.close()
 
 
-def clear_memory(chat_id: str):
-    """Hapus memori user (saat user minta reset total)."""
-    try:
-        with _db_lock:
-            conn = sqlite3.connect(MEMORY_DB_PATH, check_same_thread=False)
-            conn.execute("DELETE FROM user_memory WHERE chat_id = ?", (chat_id,))
-            conn.commit()
-            conn.close()
-        print(f"[LongMemory] Memori dihapus: {chat_id}", flush=True)
-    except Exception as e:
-        print(f"[LongMemory] Gagal clear {chat_id}: {e}", flush=True)
+def _get_con() -> sqlite3.Connection:
+    Path(MEMORY_DB).parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(MEMORY_DB)
 
 
-def list_all(limit: int = 20) -> list:
-    """Kembalikan daftar user yang punya memori (untuk debug/admin)."""
-    try:
-        with _db_lock:
-            conn = sqlite3.connect(MEMORY_DB_PATH, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT chat_id, updated_at, length(summary) as len FROM user_memory ORDER BY updated_at DESC LIMIT ?",
-                (limit,)
+# ---------------------------------------------------------------------------
+# CRUD
+# ---------------------------------------------------------------------------
+def save_memory(user_id: str, snippet: str, key_facts: list[str] = None):
+    """Simpan ringkasan dan/atau fakta user ke SQLite."""
+    if not user_id:
+        return
+    now = datetime.now().isoformat()
+    with _db_lock:
+        con = _get_con()
+        try:
+            # Simpan snippet
+            if snippet:
+                snip = snippet[:MAX_SNIPPET_LENGTH]
+                con.execute(
+                    "INSERT OR REPLACE INTO user_snippet(user_id, snippet, updated) VALUES(?,?,?)",
+                    (user_id, snip, now)
+                )
+            # Simpan fakta
+            if key_facts:
+                for fact in key_facts[:MAX_FACTS_PER_USER]:
+                    if fact and fact.strip():
+                        con.execute(
+                            "INSERT OR REPLACE INTO user_memory(user_id, key_fact, updated) VALUES(?,?,?)",
+                            (user_id, fact.strip()[:300], now)
+                        )
+                # Batasi maks fakta per user
+                con.execute("""
+                    DELETE FROM user_memory WHERE user_id=? AND key_fact NOT IN (
+                        SELECT key_fact FROM user_memory WHERE user_id=?
+                        ORDER BY updated DESC LIMIT ?
+                    )
+                """, (user_id, user_id, MAX_FACTS_PER_USER))
+            con.commit()
+        finally:
+            con.close()
+
+
+def load_memory(user_id: str) -> str:
+    """
+    Muat konteks memori user.
+    Mengembalikan string siap inject ke system prompt, atau '' jika kosong.
+    """
+    if not user_id:
+        return ""
+    with _db_lock:
+        con = _get_con()
+        try:
+            # Muat fakta
+            rows  = con.execute(
+                "SELECT key_fact FROM user_memory WHERE user_id=? ORDER BY updated DESC LIMIT ?",
+                (user_id, MAX_FACTS_PER_USER)
             ).fetchall()
-            conn.close()
-        return [dict(r) for r in rows]
-    except Exception:
-        return []
+            facts = [r[0] for r in rows]
 
+            # Muat snippet
+            row = con.execute(
+                "SELECT snippet FROM user_snippet WHERE user_id=?",
+                (user_id,)
+            ).fetchone()
+            snippet = row[0] if row else ""
+        finally:
+            con.close()
 
-# ---------------------------------------------------------------------------
-# Memory Injection ke Session History
-# ---------------------------------------------------------------------------
-def build_memory_context(memory: dict) -> str:
-    """
-    Buat teks konteks memori untuk diinjeksikan ke system prompt / history.
-    Dipanggil saat session baru dimulai.
-    """
+    if not facts and not snippet:
+        return ""
+
     parts = []
-    if memory.get("summary"):
-        parts.append(f"Ringkasan percakapan sebelumnya:\n{memory['summary']}")
-    if memory.get("key_facts"):
-        facts = "\n".join(f"- {f}" for f in memory["key_facts"])
-        parts.append(f"Fakta penting tentang user ini:\n{facts}")
-    return "\n\n".join(parts)
+    if facts:
+        parts.append("*Fakta yang diingat tentang pengguna ini:*")
+        parts.extend(f"- {f}" for f in facts)
+    if snippet:
+        parts.append("\n*Ringkasan percakapan sebelumnya:*")
+        parts.append(snippet)
+
+    return "\n".join(parts)
 
 
-def extract_key_facts_from_history(history: list) -> list:
+def save_fact(user_id: str, fact: str):
+    """Simpan satu fakta spesifik (dari tag <REMEMBER>)."""
+    save_memory(user_id, snippet="", key_facts=[fact])
+
+
+def forget_fact(user_id: str, fact: str):
+    """Hapus fakta spesifik (dari tag <FORGET>)."""
+    if not user_id or not fact:
+        return
+    with _db_lock:
+        con = _get_con()
+        try:
+            # Cari fakta yang paling mirip (partial match)
+            con.execute(
+                "DELETE FROM user_memory WHERE user_id=? AND key_fact LIKE ?",
+                (user_id, f"%{fact.strip()[:100]}%")
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def clear_memory(user_id: str):
+    """Hapus semua memori user."""
+    if not user_id:
+        return
+    with _db_lock:
+        con = _get_con()
+        try:
+            con.execute("DELETE FROM user_memory WHERE user_id=?", (user_id,))
+            con.execute("DELETE FROM user_snippet WHERE user_id=?", (user_id,))
+            con.commit()
+        finally:
+            con.close()
+
+
+# ---------------------------------------------------------------------------
+# Ekstraksi fakta dari history (utility)
+# ---------------------------------------------------------------------------
+def extract_key_facts_from_history(history: list) -> list[str]:
     """
-    Ekstrak fakta penting dari history percakapan (nama, pekerjaan, preferensi, dll).
-    Heuristik sederhana — bisa diganti dengan pemanggilan Gemini jika perlu lebih akurat.
+    Ekstrak fakta penting dari history percakapan.
+    Sederhana: cari pola 'saya ... / nama saya / alergi / hobi / dsb'
     """
-    import re
     facts = []
-    user_messages = [h["content"] for h in history if h.get("role") == "user"]
-    text = " ".join(user_messages[-20:])  # ambil 20 pesan terakhir
-
-    # Deteksi nama
-    name_match = re.search(r"(?:nama saya|panggil saya|saya adalah|i am|my name is)\s+([A-Z][a-z]+)", text, re.IGNORECASE)
-    if name_match:
-        facts.append(f"Nama user: {name_match.group(1)}")
-
-    # Deteksi pekerjaan
-    job_match = re.search(r"(?:saya bekerja|saya adalah|i work as|i am a|i'm a)\s+(?:seorang\s+)?([a-zA-Z ]+)", text, re.IGNORECASE)
-    if job_match:
-        job = job_match.group(1).strip()[:40]
-        facts.append(f"Pekerjaan: {job}")
-
-    return facts[:5]  # maks 5 fakta
+    keywords = [
+        "nama saya", "saya bernama", "umur saya", "saya berumur",
+        "pekerjaan saya", "saya bekerja", "saya tinggal", "alamat saya",
+        "alergi", "hobi saya", "saya suka", "saya tidak suka",
+        "saya vegetarian", "saya muslim", "agama saya",
+    ]
+    for msg in history:
+        if msg.get("role") not in ("user",):
+            continue
+        content = (msg.get("content") or "").lower()
+        for kw in keywords:
+            if kw in content:
+                # Ambil kalimat yang mengandung keyword
+                for sent in content.split("."):
+                    if kw in sent and len(sent.strip()) > 5:
+                        fact = sent.strip()[:200]
+                        if fact and fact not in facts:
+                            facts.append(fact)
+                break
+    return facts[:10]
