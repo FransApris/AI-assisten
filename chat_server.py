@@ -97,7 +97,7 @@ _WA_WHITELIST_RAW  = os.getenv("WA_WHITELIST", "")
 WA_WHITELIST       = [n.strip() for n in _WA_WHITELIST_RAW.split(",") if n.strip()]
 WA_ADMIN_CHAT_ID   = os.getenv("WA_ADMIN_CHAT_ID", "")
 WA_INVITE_CODE     = os.getenv("WA_INVITE_CODE", "").strip()
-_WA_ADMIN_RAW      = os.getenv("WA_ADMIN_NUMBERS", os.getenv("WA_OWNER_CHAT_ID", ""))
+_WA_ADMIN_RAW      = os.getenv("WA_ADMIN_NUMBERS", os.getenv("WA_OWNER_CHAT_ID", WA_ADMIN_CHAT_ID))
 WA_ADMIN_NUMBERS   = [n.strip() for n in _WA_ADMIN_RAW.split(",") if n.strip()]
 
 # ---------------------------------------------------------------------------
@@ -1255,27 +1255,28 @@ def _process_green_api(data):
             green_api.send_message(chat_id, _msg.get_invite_prompt())
         return
 
-    # 👮 Perintah Admin (hanya untuk admin yang terdaftar di WA_ADMIN_NUMBERS)
+    # 👮 Perintah Admin (hanya untuk admin yang terdaftar di WA_ADMIN_NUMBERS atau WA_ADMIN_CHAT_ID)
     if _wa_is_admin(chat_id):
         raw_admin_msg = (
             data.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
             or data.get("messageData", {}).get("extendedTextMessageData", {}).get("text", "")
         ).strip()
+        raw_admin_msg_lower = raw_admin_msg.lower()
 
-        if raw_admin_msg.startswith("/adduser "):
+        if raw_admin_msg_lower.startswith("/adduser "):
             target = raw_admin_msg[9:].strip().replace(" ", "").replace("+", "")
             target_id = target + "@c.us" if "@" not in target else target
             _wa_approve_user(target_id, name="", added_by=chat_id)
             total = _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users)
             green_api.send_message(chat_id, f"User {target_id} berhasil ditambahkan. Total: {total} user.")
             return
-        elif raw_admin_msg.startswith("/removeuser "):
+        elif raw_admin_msg_lower.startswith("/removeuser "):
             target = raw_admin_msg[12:].strip().replace(" ", "").replace("+", "")
             target_id = target + "@c.us" if "@" not in target else target
             _wa_remove_user(target_id)
             green_api.send_message(chat_id, f"User {target_id} dihapus dari daftar.")
             return
-        elif raw_admin_msg == "/listusers":
+        elif raw_admin_msg_lower == "/listusers":
             if _REGISTRY_OK:
                 users = _ureg.list_users()
                 if users:
@@ -1293,14 +1294,14 @@ def _process_green_api(data):
                 msg = f"*Daftar User ({len(users_list)}):*\n" + "\n".join(users_list) if users_list else "Belum ada user."
             green_api.send_message(chat_id, msg)
             return
-        elif raw_admin_msg == "/usercount":
+        elif raw_admin_msg_lower == "/usercount":
             total = _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users)
             green_api.send_message(chat_id, f"Total user terdaftar: *{total}*")
             return
-        elif raw_admin_msg.startswith("/approve"):
+        elif raw_admin_msg_lower.startswith("/approve"):
             # /approve <TOKEN> — setujui dokumen masuk ke KB
-            parts = raw_admin_msg.split()
-            if len(parts) < 2:
+            token = raw_admin_msg[8:].strip().upper()
+            if not token:
                 # Tampilkan daftar pending
                 with _pending_kb_lock:
                     pending_list = list(_pending_kb.items())
@@ -1313,7 +1314,6 @@ def _process_green_api(data):
                     lines.append("\nGunakan: `/approve <TOKEN>`")
                     green_api.send_message(chat_id, "\n".join(lines))
             else:
-                token = parts[1].upper()
                 with _pending_kb_lock:
                     doc = _pending_kb.get(token)
                 if not doc:
@@ -1340,7 +1340,7 @@ def _process_green_api(data):
                             green_api.send_message(chat_id, f"Gagal approve: {e}")
                     threading.Thread(target=_do_approve, daemon=True).start()
             return
-        elif raw_admin_msg == "/pending":
+        elif raw_admin_msg_lower == "/pending":
             # Alias untuk /approve tanpa token
             with _pending_kb_lock:
                 pending_list = list(_pending_kb.items())
@@ -1352,7 +1352,7 @@ def _process_green_api(data):
                     lines.append(f"• `/approve {tok}` — {doc['filename']} dari {doc['sender_name']}")
                 green_api.send_message(chat_id, "\n".join(lines))
             return
-        elif raw_admin_msg == "/kb-status":
+        elif raw_admin_msg_lower == "/kb-status":
             green_api.send_message(chat_id, "Mengambil status Knowledge Base...")
             def _get_status():
                 try:
@@ -1364,7 +1364,7 @@ def _process_green_api(data):
                     green_api.send_message(chat_id, f"❌ Gagal: {e}")
             threading.Thread(target=_get_status, daemon=True).start()
             return
-        elif raw_admin_msg == "/ingest-kb":
+        elif raw_admin_msg_lower == "/ingest-kb":
             green_api.send_message(chat_id, "Memulai proses ingest ulang Google Drive...")
             def _do_ingest():
                 try:
@@ -1375,9 +1375,9 @@ def _process_green_api(data):
                     green_api.send_message(chat_id, f"❌ Ingest gagal: {e}")
             threading.Thread(target=_do_ingest, daemon=True).start()
             return
-        elif raw_admin_msg.startswith("/stats"):
+        elif raw_admin_msg_lower.startswith("/stats"):
             import re
-            m = re.match(r'/stats\s+(\d+)', raw_admin_msg)
+            m = re.match(r'/stats\s+(\d+)', raw_admin_msg_lower)
             days = int(m.group(1)) if m else 7
             green_api.send_message(chat_id, f"Menyusun laporan statistik {days} hari terakhir...")
             def _do_stats():
@@ -1392,9 +1392,9 @@ def _process_green_api(data):
                     green_api.send_message(chat_id, f"❌ Gagal mengambil stats: {e}")
             threading.Thread(target=_do_stats, daemon=True).start()
             return
-        elif raw_admin_msg in ("/maintenance on", "/maintenance off"):
+        elif raw_admin_msg_lower in ("/maintenance on", "/maintenance off"):
             import features.messages as _msg_mod
-            mode_on = raw_admin_msg.endswith("on")
+            mode_on = raw_admin_msg_lower.endswith("on")
             os.environ["WA_MAINTENANCE_MODE"] = "true" if mode_on else "false"
             _msg_mod.MAINTENANCE_MODE = mode_on
             status = "AKTIF — APRIS tidak akan menjawab user sementara." if mode_on else "NONAKTIF — APRIS kembali normal."
