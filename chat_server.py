@@ -179,13 +179,15 @@ def _wa_remove_user(chat_id: str):
 
 def _wa_is_admin(chat_id: str) -> bool:
     """Cek apakah chat_id adalah admin."""
-    # Jika WA_ADMIN_NUMBERS eksplisit ada, gunakan itu
+    # Jika WA_ADMIN_NUMBERS eksplisit ada, cek kecocokan
     if WA_ADMIN_NUMBERS:
-        return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS)
+        if any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_ADMIN_NUMBERS):
+            return True
     
-    # Jika kosong, fallback: anggap user yang ter-whitelist sebagai admin
+    # Fallback: jadikan semua nomor whitelist sebagai admin (karena ini asisten personal)
     if WA_WHITELIST:
-        return any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_WHITELIST)
+        if any(chat_id.startswith(n.lstrip("+")) or n in chat_id for n in WA_WHITELIST):
+            return True
     
     # Fallback terakhir: cek dari SQLite (user yang sudah diapprove)
     with _wa_approved_lock:
