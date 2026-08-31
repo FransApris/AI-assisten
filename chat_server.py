@@ -1375,6 +1375,23 @@ def _process_green_api(data):
                     green_api.send_message(chat_id, f"❌ Ingest gagal: {e}")
             threading.Thread(target=_do_ingest, daemon=True).start()
             return
+        elif raw_admin_msg.startswith("/stats"):
+            import re
+            m = re.match(r'/stats\s+(\d+)', raw_admin_msg)
+            days = int(m.group(1)) if m else 7
+            green_api.send_message(chat_id, f"Menyusun laporan statistik {days} hari terakhir...")
+            def _do_stats():
+                try:
+                    if _ANALYTICS_OK and _analytics:
+                        stats_data = _analytics.get_stats(days=days)
+                        msg = _analytics.format_stats_message(stats_data)
+                        green_api.send_message(chat_id, msg)
+                    else:
+                        green_api.send_message(chat_id, "❌ Modul Analytics belum aktif.")
+                except Exception as e:
+                    green_api.send_message(chat_id, f"❌ Gagal mengambil stats: {e}")
+            threading.Thread(target=_do_stats, daemon=True).start()
+            return
         elif raw_admin_msg in ("/maintenance on", "/maintenance off"):
             import features.messages as _msg_mod
             mode_on = raw_admin_msg.endswith("on")
