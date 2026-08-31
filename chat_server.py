@@ -1276,7 +1276,27 @@ def _process_green_api(data):
         ).strip()
         raw_admin_msg_lower = raw_admin_msg.lower()
 
-        if raw_admin_msg_lower.startswith("/adduser "):
+        if raw_admin_msg_lower in ("/admin", "/help", "/help admin"):
+            help_text = (
+                "🛠️ *Daftar Perintah Admin APRIS*\n\n"
+                "*Manajemen Pengguna:*\n"
+                "• `/adduser <nomor>` : Beri akses ke user baru (cth: /adduser 0812...)\n"
+                "• `/removeuser <no>` : Cabut akses user\n"
+                "• `/listusers` : Lihat daftar user terdaftar\n"
+                "• `/usercount` : Cek total user\n\n"
+                "*Pengetahuan (Knowledge Base):*\n"
+                "• `/kb-status` : Lihat isi dokumen yang sudah dihapal APRIS\n"
+                "• `/ingest-kb` : Tarik ulang semua dokumen dari Google Drive\n"
+                "• `/pending` : Lihat antrean dokumen yang menunggu persetujuan\n"
+                "• `/approve <token>` : Setujui dokumen masuk ke KB\n"
+                "• _(Tips)_ Upload PDF dengan caption `/ingest` untuk langsung simpan ke KB.\n\n"
+                "*Sistem:*\n"
+                "• `/stats [hari]` : Lihat statistik penggunaan bot\n"
+                "• `/maintenance on/off` : Nyalakan/matikan mode perbaikan"
+            )
+            green_api.send_message(chat_id, help_text)
+            return
+        elif raw_admin_msg_lower.startswith("/adduser "):
             target = raw_admin_msg[9:].strip().replace(" ", "").replace("+", "")
             target_id = target + "@c.us" if "@" not in target else target
             _wa_approve_user(target_id, name="", added_by=chat_id)
