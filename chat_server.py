@@ -1261,27 +1261,43 @@ def _process_green_api(data):
 
     # 🔒 Sistem Akses: Whitelist & Invite-Only
     sender_name = sender_data.get("senderName", "")
-    if not _wa_is_whitelisted(chat_id):
-        # Cek apakah ini pesan registrasi (kode undangan)
-        raw_text = (
-            data.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
-            or data.get("messageData", {}).get("extendedTextMessageData", {}).get("text", "")
-        ).strip()
+    sender_id   = sender_data.get("sender", chat_id)
+    is_group    = chat_id.endswith("@g.us")
+    
+    msg_data = data.get("messageData", {})
+    raw_text = (
+        msg_data.get("textMessageData", {}).get("textMessage", "")
+        or msg_data.get("extendedTextMessageData", {}).get("text", "")
+        or msg_data.get("fileMessageData", {}).get("caption", "")
+        or msg_data.get("imageMessageData", {}).get("caption", "")
+        or msg_data.get("videoMessageData", {}).get("caption", "")
+    ).strip()
 
+    # 👥 Mode Grup: Hanya respons jika disebut (mention) @apris atau @APRIS
+    if is_group:
+        if "@apris" not in raw_text.lower():
+            return # Abaikan chat grup secara diam-diam jika tidak memanggil APRIS
+
+    is_whitelisted = _wa_is_whitelisted(chat_id) or (is_group and _wa_is_whitelisted(sender_id))
+
+    if not is_whitelisted:
+        # Cek apakah ini pesan registrasi (kode undangan)
         if WA_INVITE_CODE and raw_text == WA_INVITE_CODE:
             # Kode benar → daftarkan nomor ini ke memory + SQLite
-            _wa_approve_user(chat_id, name=sender_name, added_by="invite_code")
-            print(f"[Invite] Nomor terdaftar via kode: {chat_id} ({sender_name})", flush=True)
+            target_approve_id = sender_id if is_group else chat_id
+            _wa_approve_user(target_approve_id, name=sender_name, added_by="invite_code")
+            print(f"[Invite] Nomor terdaftar via kode: {target_approve_id} ({sender_name})", flush=True)
             green_api.send_message(chat_id, _msg.get_registered_message(sender_name))
             # Notif admin jika ada
             if WA_ADMIN_CHAT_ID:
                 green_api.send_message(WA_ADMIN_CHAT_ID,
-                    f"[APRIS] User baru terdaftar:\n{sender_name} ({chat_id})")
+                    f"[APRIS] User baru terdaftar:\n{sender_name} ({target_approve_id})")
         else:
-            # Belum terdaftar / kode salah → selalu tampilkan prompt undangan
-            # (jangan tampilkan 'kode salah' karena user mungkin belum tahu harus kirim kode)
-            print(f"[Whitelist] Nomor belum terdaftar: {chat_id}", flush=True)
-            green_api.send_message(chat_id, _msg.get_invite_prompt())
+            # Belum terdaftar / kode salah
+            print(f"[Whitelist] Nomor belum terdaftar: {sender_id}", flush=True)
+            if not is_group:
+                # Hanya kirim pesan penolakan di chat pribadi (agar tidak spam di grup)
+                green_api.send_message(chat_id, _msg.get_invite_prompt())
         return
 
     # 👮 Perintah Admin (hanya untuk admin yang terdaftar di WA_ADMIN_NUMBERS atau WA_ADMIN_CHAT_ID)
@@ -2083,7 +2099,7 @@ def chat():
         except Exception:
             medical_context = ""
 
-        augmented_msg = user_msg
+        augmented_msg = f"[{sender_name}]: {user_msg}" if sender_name else user_msg
         if rag_context or url_context or long_term_memory or semantic_memory or medical_context:
             augmented_msg += "\n\n"
             if medical_context:
