@@ -1283,7 +1283,8 @@ def _process_green_api(data):
                 "• `/adduser <nomor>` : Beri akses ke user baru (cth: /adduser 0812...)\n"
                 "• `/removeuser <no>` : Cabut akses user\n"
                 "• `/listusers` : Lihat daftar user terdaftar\n"
-                "• `/usercount` : Cek total user\n\n"
+                "• `/usercount` : Cek total user\n"
+                "• `/broadcast <pesan>` : Kirim pengumuman massal\n\n"
                 "*Pengetahuan (Knowledge Base):*\n"
                 "• `/kb-status` : Lihat isi dokumen yang sudah dihapal APRIS\n"
                 "• `/ingest-kb` : Tarik ulang semua dokumen dari Google Drive\n"
@@ -1330,6 +1331,52 @@ def _process_green_api(data):
         elif raw_admin_msg_lower == "/usercount":
             total = _ureg.user_count() if _REGISTRY_OK else len(_wa_approved_users)
             green_api.send_message(chat_id, f"Total user terdaftar: *{total}*")
+            return
+        elif raw_admin_msg_lower.startswith("/broadcast "):
+            # /broadcast <pesan>
+            broadcast_msg = raw_admin_msg[11:].strip()
+            if not broadcast_msg:
+                green_api.send_message(chat_id, "Pesan broadcast tidak boleh kosong.")
+                return
+
+            green_api.send_message(chat_id, "Memulai proses broadcast. Menarik daftar pengguna...")
+            
+            def _do_broadcast():
+                try:
+                    if _REGISTRY_OK:
+                        users = _ureg.list_users()
+                        user_ids = [u.get("chat_id") for u in users if u.get("chat_id")]
+                    else:
+                        with _wa_approved_lock:
+                            user_ids = list(_wa_approved_users)
+                    
+                    if not user_ids:
+                        green_api.send_message(chat_id, "Tidak ada user untuk di-broadcast.")
+                        return
+
+                    success_count = 0
+                    fail_count = 0
+                    
+                    formatted_msg = f"[📢 BROADCAST APRIS]\n\n{broadcast_msg}"
+
+                    for uid in user_ids:
+                        try:
+                            green_api.send_message(uid, formatted_msg)
+                            success_count += 1
+                        except Exception:
+                            fail_count += 1
+                        time.sleep(1.5) # Jeda 1.5 detik per pesan agar aman dari rate limit WA
+                    
+                    report = (
+                        f"✅ *Broadcast Selesai*\n\n"
+                        f"Berhasil terkirim: {success_count}\n"
+                        f"Gagal: {fail_count}"
+                    )
+                    green_api.send_message(chat_id, report)
+                except Exception as e:
+                    green_api.send_message(chat_id, f"❌ Gagal broadcast: {e}")
+
+            threading.Thread(target=_do_broadcast, daemon=True).start()
             return
         elif raw_admin_msg_lower.startswith("/approve"):
             # /approve <TOKEN> — setujui dokumen masuk ke KB
