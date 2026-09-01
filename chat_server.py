@@ -1544,7 +1544,22 @@ def _process_green_api(data):
     if msg_type == "textMessage":
         user_msg = msg_data.get("textMessageData", {}).get("textMessage", "")
     elif msg_type == "extendedTextMessage":
-        user_msg = msg_data.get("extendedTextMessageData", {}).get("text", "")
+        ext_data = msg_data.get("extendedTextMessageData", {})
+        user_msg = ext_data.get("text", "")
+        
+        # Ekstrak pesan yang di-reply (quoted message)
+        quoted_msg = ext_data.get("quotedMessage", {})
+        if quoted_msg:
+            quoted_text = (
+                quoted_msg.get("textMessage")
+                or quoted_msg.get("extendedTextMessage", {}).get("text")
+                or quoted_msg.get("imageMessage", {}).get("caption")
+                or quoted_msg.get("videoMessage", {}).get("caption")
+                or quoted_msg.get("documentMessage", {}).get("caption")
+                or ""
+            )
+            if quoted_text:
+                user_msg = f"{user_msg}\n\n[Pesan yang diteruskan/dibalas]:\n\"{quoted_text}\""
     elif msg_type == "documentMessage":
         # 📄 Dokumen — PDF dengan auto-fallback OCR untuk scan/gambar
         user_msg     = msg_data.get("fileMessageData", {}).get("caption", "")
