@@ -815,6 +815,22 @@ def _init_schedulers():
     except Exception as e:
         print(f"[Scheduler] Proactive error: {e}")
 
+    # 3.5 Global Reminder Callback (untuk menangani SCHEDULE_MSG dari chat/WA)
+    try:
+        from features import reminder
+        from features import green_api as _sched_ga
+        def _global_reminder_callback(target: str, message: str):
+            try:
+                _sched_ga.send_message(target, message)
+                print(f"[Reminder] Berhasil mengirim ke {target}", flush=True)
+            except Exception as e:
+                print(f"[Reminder] Gagal kirim ke {target}: {e}", flush=True)
+        
+        reminder.set_send_callback(_global_reminder_callback)
+        print("[Scheduler] Global Reminder Callback terdaftar", flush=True)
+    except Exception as e:
+        print(f"[Scheduler] Gagal daftarkan Reminder Callback: {e}", flush=True)
+
     # 4. Salam pagi harian (WA_DAILY_GREETING=true, default: 06:00 WIB)
     if os.getenv("WA_DAILY_GREETING", "false").lower() == "true":
         try:
@@ -2514,13 +2530,7 @@ def chat():
                                 f"Pastikan kontak ada di Google Contacts atau berikan nomor lengkap."
                             )
                             continue
-                        def _make_wa_callback(target_id):
-                            def _cb(target, message):
-                                try: _sched_ga.send_message(target_id, message)
-                                except Exception as cb_e:
-                                    print(f"[ScheduleMsg] Gagal kirim ke {target_id}: {cb_e}")
-                            return _cb
-                        rem_mod.set_send_callback(_make_wa_callback(to_num))
+                        
                         result = rem_mod.set_reminder(message=msg_text, target=to_num, run_at=run_at)
                         apris_reply += (
                             f"\n\n✅ Pesan dijadwalkan ke *{contact_label}* pada *{run_at} WIB*."
@@ -2947,13 +2957,7 @@ def _run_action_interceptors(apris_reply: str) -> str:
                             f"Pastikan kontak ada di Google Contacts atau berikan nomor lengkap."
                         )
                         continue
-                    def _make_wa_callback(target_id):
-                        def _cb(target, message):
-                            try: _sched_ga.send_message(target_id, message)
-                            except Exception as cb_e:
-                                print(f"[ScheduleMsg] Gagal kirim ke {target_id}: {cb_e}")
-                        return _cb
-                    rem_mod.set_send_callback(_make_wa_callback(to_num))
+                    
                     result = rem_mod.set_reminder(message=msg_text, target=to_num, run_at=run_at)
                     apris_reply += (
                         f"\n\n✅ Pesan dijadwalkan ke *{contact_label}* pada *{run_at} WIB*."
