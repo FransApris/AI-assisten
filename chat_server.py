@@ -1567,6 +1567,8 @@ def _process_green_api(data):
         if download_url:
             try:
                 media_data = green_api.media_to_base64(download_url, mime_type)
+                if msg_type == "audioMessage":
+                    media_data["is_voice_note"] = True
             except Exception as e:
                 print(f"[Green-API] Gagal memproses media: {e}")
                 user_msg += f"\n[Sistem: Gagal memproses file/media yang dikirim: {e}]"
@@ -1723,6 +1725,7 @@ def _process_green_api(data):
     # 3. Panggil /chat — timeout 60s, progress message tiap 30s
     port = os.getenv("PORT", "5052")
     reply_text     = ""
+    tts_file_path  = ""
     _done          = [False]
 
     def _send_progress():
@@ -1762,7 +1765,9 @@ def _process_green_api(data):
                         timeout = 60,
                     )
                     if res2.status_code == 200:
-                        reply_text = res2.json().get("reply", "")
+                        res_data = res2.json()
+                        reply_text = res_data.get("reply", "")
+                        tts_file_path = res_data.get("tts_file_path", "")
                 except Exception:
                     pass
             if not reply_text:
@@ -1792,6 +1797,7 @@ def _process_green_api(data):
 
         else:
             reply_text = res_data.get("reply", "Maaf, terjadi kesalahan saat memproses pesan.")
+            tts_file_path = res_data.get("tts_file_path", "")
 
     except requests.exceptions.Timeout:
         print("[WhatsApp] Timeout /chat setelah 60s", flush=True)
@@ -1861,6 +1867,18 @@ def _process_green_api(data):
         _smart_send(reply_text)
     except Exception as send_err:
         print(f"[WhatsApp] Gagal kirim balasan (1): {send_err}", flush=True)
+
+    # 5. Kirim Voice Note balasan (jika ada)
+    if tts_file_path and os.path.exists(tts_file_path):
+        try:
+            green_api.send_file_by_upload(chat_id, tts_file_path, filename="voice_reply.mp3")
+        except Exception as tts_err:
+            print(f"[WhatsApp] Gagal kirim Voice Note: {tts_err}", flush=True)
+        finally:
+            try:
+                os.remove(tts_file_path)
+            except Exception:
+                pass
         time.sleep(3)
         try:
             green_api.send_message(chat_id, reply_text)
@@ -1908,6 +1926,7 @@ def chat():
     user_msg    = (data.get("message") or "").strip()
     session_id  = data.get("session_id") or "default"
     sender_name = data.get("sender_name") or ""
+    is_voice_note = data.get("is_voice_note", False)
 
 
     if not user_msg:
@@ -2478,12 +2497,30 @@ def chat():
                 pass
         threading.Thread(target=_store_snippet, daemon=True).start()
 
+        # Generate TTS jika pengguna mengirim Voice Note
+        tts_file_path = ""
+        if is_voice_note:
+            try:
+                from gtts import gTTS
+                import uuid, os, tempfile
+                # Hilangkan tag HTML atau tag sistem dari balasan sebelum diubah jadi suara
+                import re
+                clean_reply_for_tts = re.sub(r'<[^>]+>', '', apris_reply)
+                tts = gTTS(text=clean_reply_for_tts, lang='id')
+                
+                tts_filename = f"reply_{uuid.uuid4().hex}.mp3"
+                tts_file_path = os.path.join(tempfile.gettempdir(), tts_filename)
+                tts.save(tts_file_path)
+            except Exception as e:
+                print(f"[TTS] Gagal generate TTS: {e}", flush=True)
+
         return jsonify({
-            "reply"      : apris_reply,
-            "session_id" : session_id,
-            "time"       : now_str,
-            "model"      : CHAT_MODEL,
-            "rag_used"   : bool(rag_context),
+            "reply"        : apris_reply,
+            "tts_file_path": tts_file_path,
+            "session_id"   : session_id,
+            "time"         : now_str,
+            "model"        : CHAT_MODEL,
+            "rag_used"     : bool(rag_context),
         })
 
     except Exception as e:
