@@ -1273,9 +1273,18 @@ def _process_green_api(data):
         or msg_data.get("videoMessageData", {}).get("caption", "")
     ).strip()
 
-    # 👥 Mode Grup: Hanya respons jika disebut (mention) @apris atau @APRIS
+    # 👥 Mode Grup: Hanya respons jika disebut (mention) @apris atau native mention @nomorbot
     if is_group:
-        if "@apris" not in raw_text.lower():
+        bot_wid = data.get("instanceData", {}).get("wid", "")
+        bot_phone = bot_wid.split("@")[0] if bot_wid else ""
+        
+        is_mentioned = False
+        if "@apris" in raw_text.lower():
+            is_mentioned = True
+        elif bot_phone and f"@{bot_phone}" in raw_text:
+            is_mentioned = True
+            
+        if not is_mentioned:
             return # Abaikan chat grup secara diam-diam jika tidak memanggil APRIS
 
     is_whitelisted = _wa_is_whitelisted(chat_id) or (is_group and _wa_is_whitelisted(sender_id))
