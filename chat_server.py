@@ -93,8 +93,13 @@ RAG_SERVER_URL = os.getenv("RAG_SERVER_URL", "").rstrip("/")
 # WA_WHITELIST    : kosong = semua diizinkan | isi = hanya nomor ini (static)
 # WA_INVITE_CODE  : kode undangan untuk registrasi mandiri user baru
 # WA_ADMIN_NUMBERS: nomor admin yang bisa tambah/hapus user via WA command
-_WA_WHITELIST_RAW  = os.getenv("WA_WHITELIST", "")
+_WA_WHITELIST_RAW  = os.getenv("WA_WHITELIST", os.getenv("WHATSAPP_ALLOWED_NUMBERS", ""))
 WA_WHITELIST       = [n.strip() for n in _WA_WHITELIST_RAW.split(",") if n.strip()]
+
+# WA_BLACKLIST    : daftar nomor yang akan selalu diabaikan oleh APRIS (misal: bot sendiri)
+_WA_BLACKLIST_RAW  = os.getenv("WA_BLACKLIST", "")
+WA_BLACKLIST       = [n.strip() for n in _WA_BLACKLIST_RAW.split(",") if n.strip()]
+
 WA_ADMIN_CHAT_ID   = os.getenv("WA_ADMIN_CHAT_ID", "")
 WA_INVITE_CODE     = os.getenv("WA_INVITE_CODE", "").strip()
 _WA_ADMIN_RAW      = os.getenv("WA_ADMIN_NUMBERS", os.getenv("WA_OWNER_CHAT_ID", WA_ADMIN_CHAT_ID))
@@ -1263,6 +1268,12 @@ def _process_green_api(data):
     sender_name = sender_data.get("senderName", "")
     sender_id   = sender_data.get("sender", chat_id)
     is_group    = chat_id.endswith("@g.us")
+    
+    # 🚫 Cek Blacklist terlebih dahulu
+    for blocked_num in WA_BLACKLIST:
+        if blocked_num in chat_id or blocked_num in sender_id:
+            print(f"[Blacklist] Mengabaikan pesan dari {sender_id}", flush=True)
+            return
     
     msg_data = data.get("messageData", {})
     raw_text = (
